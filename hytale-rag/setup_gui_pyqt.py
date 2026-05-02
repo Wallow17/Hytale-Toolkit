@@ -949,6 +949,10 @@ class HytalePathPage(QWidget):
         channel_card_layout.addWidget(channel_header)
 
         channel_btn_row = QWidget()
+        # Qt collapses the wrapper widget to 0px when the parent VBox doesn't
+        # know its preferred size; pin a minimum so the buttons stay visible
+        # and don't visually merge with the checkbox below.
+        channel_btn_row.setMinimumHeight(38)
         channel_btn_layout = QHBoxLayout(channel_btn_row)
         channel_btn_layout.setContentsMargins(0, 0, 0, 0)
         channel_btn_layout.setSpacing(8)
@@ -1318,7 +1322,11 @@ class HytalePathPage(QWidget):
                     self._populate_channel_card(root)
 
         path_obj = Path(path)
-        self.checklist_card.show()
+        # When the picker is driving selection the channel buttons + the
+        # green hytale_status line are enough; the per-file checklist would
+        # just redundantly take vertical space.
+        if not self._detected_channels:
+            self.checklist_card.show()
 
         # Check each required item
         client_ok = (path_obj / "Client").exists()
