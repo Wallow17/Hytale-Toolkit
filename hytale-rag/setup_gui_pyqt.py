@@ -1040,6 +1040,9 @@ class HytalePathPage(QWidget):
         hytale_browse.clicked.connect(self.browse_hytale)
         hytale_row_layout.addWidget(hytale_browse)
 
+        # Keep a reference so we can hide the manual input when the channel
+        # picker has detected installs (the picker fills the input itself).
+        self.hytale_row = hytale_row
         hytale_layout.addWidget(hytale_row)
 
         # Hytale validation status
@@ -1175,7 +1178,12 @@ class HytalePathPage(QWidget):
         self._setup_both = bool(checked and len(self._detected_channels) >= 2)
 
     def _populate_channel_card(self, install_root: Path):
-        """Render the channel picker if any channels were found under root."""
+        """Render the channel picker if any channels were found under root.
+
+        When the picker is active the manual path input + checklist are hidden:
+        the picker button is the source of truth, the green hytale_status line
+        confirms validity, and the page stays compact.
+        """
         try:
             channels = _dist.scan_hytale_channels(install_root)
         except Exception:
@@ -1184,6 +1192,7 @@ class HytalePathPage(QWidget):
 
         if not channels:
             self.channel_card.hide()
+            self.hytale_row.show()
             return
 
         # Show buttons only for channels that actually exist
@@ -1195,6 +1204,9 @@ class HytalePathPage(QWidget):
             self.setup_both_check.setChecked(False)
 
         self.channel_card.show()
+        # Hide the manual input + per-file checklist; the picker drives both.
+        self.hytale_row.hide()
+        self.checklist_card.hide()
 
         # Auto-select: prefer release, otherwise the only one present
         default = "release" if "release" in channels else next(iter(channels))
