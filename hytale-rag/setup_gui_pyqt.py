@@ -1939,9 +1939,12 @@ class DecompilePage(QWidget):
         # Check for Java installation
         self._check_java()
 
-        # Check for existing decompiled code
+        # Check for existing decompiled code (per-channel layout).
+        # The Hytale install path tells us which channel this run will produce,
+        # so we only flag "existing" when that specific channel's dir is populated.
         if toolkit_path:
-            decompiled_dir = Path(toolkit_path) / "decompiled"
+            channel = _dist.detect_channel_from_hytale_path(hytale_path or "")
+            decompiled_dir = Path(toolkit_path) / "decompiled" / channel
             if decompiled_dir.exists() and any(decompiled_dir.iterdir()):
                 self._has_existing = True
                 self._use_existing = True
@@ -2432,10 +2435,13 @@ class DecompilePage(QWidget):
         self.terminal.append_line(f"RAM Allocation: {ram_gb} GB")
         self.terminal.append_line("")
 
-        # Verify paths
+        # Verify paths. Decompile output is segregated per channel so both
+        # release and prerelease can coexist on disk.
         server_jar = Path(self._hytale_path) / "Server" / "HytaleServer.jar"
         vineflower_jar = toolkit_path / "tools" / "vineflower.jar"
-        decompiled_dir = toolkit_path / "decompiled"
+        channel = _dist.detect_channel_from_hytale_path(self._hytale_path)
+        decompiled_dir = toolkit_path / "decompiled" / channel
+        self.terminal.append_line(f"Detected channel: {channel}")
 
         if not server_jar.exists():
             self.terminal.append_error(f"ERROR: HytaleServer.jar not found at {server_jar}")
@@ -2641,880 +2647,121 @@ class DecompilePage(QWidget):
 
 
 class JavadocsPage(QWidget):
-    """Page for Javadocs generation with terminal output."""
+    """Page that links to the official Hytale javadocs.
 
-    # Signals for state changes
-    state_changed = pyqtSignal(str)  # idle, running, completed, failed
+    Hypixel publishes browsable javadocs at release.server.docs.hytale.com and
+    prerelease.server.docs.hytale.com, so we no longer generate them locally.
+    The channel selector picks which one is opened by default; users can also
+    open either explicitly. No JDK or local generation required.
+    """
+
+    state_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._button_callback = None
         self._back_button_callback = None
-        self._state = "idle"  # idle, running, completed, failed
-        self._process = None
-        self._toolkit_path = None
-        self._ram_gb = 8  # Will be set from DecompilePage settings
-        self._local_java_path = None  # Path to local JDK if installed
-        self._log_file_path = None
-        self._file_count = 0
-        self._total_files = 0
-        self._generated_count = 0
-        self._in_generating_phase = False
-        self._has_existing = False
-        self._use_existing = True  # Default to using existing if found
+        # Always "completed" — there is nothing to install for this page.
+        self._state = "completed"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(40, 40, 40, 30)
 
-        # Title
-        self.title = QLabel("Generate Javadocs")
-        self.title.setStyleSheet("font-size: 22px; font-weight: bold; color: white;")
-        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.title)
+        title = QLabel("Hytale Javadocs")
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: white;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
 
-        # Description (changes based on state)
-        self.desc = QLabel(
-            "Generate browsable HTML documentation of all classes and methods.\n"
-            "Useful for exploring the Hytale codebase in a browser."
+        desc = QLabel(
+            "Browse the official Hytale Server API docs (published by Hypixel).\n"
+            "No local generation needed — these always reflect the live server build."
         )
-        self.desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
-        self.desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.desc.setWordWrap(True)
-        layout.addWidget(self.desc)
+        desc.setStyleSheet("color: #aaaaaa; font-size: 13px;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
 
-        layout.addSpacing(20)
+        layout.addSpacing(28)
 
-        # Stacked widget for settings/terminal views
-        self.stack = QStackedWidget()
-        layout.addWidget(self.stack, 1)  # Give it stretch
+        # Active channel hint
+        self.channel_label = QLabel("")
+        self.channel_label.setStyleSheet("font-size: 12px; color: #888888;")
+        self.channel_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.channel_label)
 
-        # ===== Settings View (index 0) =====
-        self.settings_view = QWidget()
-        settings_layout = QVBoxLayout(self.settings_view)
-        settings_layout.setContentsMargins(0, 15, 0, 0)
-        settings_layout.setSpacing(20)
+        layout.addSpacing(10)
 
-        # Main content container (centered)
-        content_container = QWidget()
-        content_layout = QVBoxLayout(content_container)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(20)
+        # Two open buttons + a "default" indicator on the active channel
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(14)
+        btn_layout.addStretch()
 
-        # ===== Existing Installation Banner (hidden by default) =====
-        self.existing_banner = QWidget()
-        self.existing_banner.hide()
-        existing_layout = QVBoxLayout(self.existing_banner)
-        existing_layout.setContentsMargins(0, 0, 0, 10)
-        existing_layout.setSpacing(12)
+        self.release_btn = self._make_open_btn(
+            "Open Release Docs", _dist.javadocs_release_url
+        )
+        self.prerelease_btn = self._make_open_btn(
+            "Open Prerelease Docs", _dist.javadocs_prerelease_url
+        )
+        btn_layout.addWidget(self.release_btn)
+        btn_layout.addWidget(self.prerelease_btn)
+        btn_layout.addStretch()
+        layout.addWidget(btn_row)
 
-        # Banner header with icon
-        banner_header = QLabel("✓ Existing Javadocs found")
-        banner_header.setStyleSheet("""
-            font-family: 'Segoe UI Symbol', 'Segoe UI';
-            font-size: 14px;
-            font-weight: bold;
-            color: #2ecc71;
-            padding: 12px 16px;
-            background-color: rgba(46, 204, 113, 0.15);
-            border-radius: 8px;
-        """)
-        banner_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        existing_layout.addWidget(banner_header)
+        layout.addStretch()
+        self._refresh_channel_label()
 
-        # Option buttons container
-        options_container = QWidget()
-        options_btn_layout = QHBoxLayout(options_container)
-        options_btn_layout.setContentsMargins(0, 0, 0, 0)
-        options_btn_layout.setSpacing(10)
+    def _make_open_btn(self, label: str, url_fn) -> QPushButton:
+        btn = QPushButton(label)
+        btn.setFixedHeight(40)
+        btn.setStyleSheet(
+            "QPushButton { background-color: #1f6aa5; color: white; border: none;"
+            " border-radius: 6px; padding: 0 22px; font-size: 13px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #2980b9; }"
+        )
+        btn.clicked.connect(lambda: webbrowser.open(url_fn()))
+        return btn
 
-        # Use Existing button
-        self.use_existing_btn = QPushButton("Use Existing")
-        self.use_existing_btn.setCheckable(True)
-        self.use_existing_btn.setChecked(True)
-        self.use_existing_btn.setFixedHeight(40)
-        self.use_existing_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1f6aa5;
-                color: white;
-                border: 2px solid #1f6aa5;
-                border-radius: 6px;
-                padding: 0px 20px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-                border-color: #2980b9;
-            }
-            QPushButton:checked {
-                background-color: #1f6aa5;
-                border-color: #3498db;
-            }
-        """)
-        self.use_existing_btn.clicked.connect(lambda: self._set_use_existing(True))
-        options_btn_layout.addWidget(self.use_existing_btn)
+    def _refresh_channel_label(self):
+        try:
+            ch = _dist.get_active_channel()
+        except Exception:
+            ch = "release"
+        self.channel_label.setText(f"Active channel: {ch}")
 
-        # Regenerate button
-        self.regenerate_btn = QPushButton("Regenerate")
-        self.regenerate_btn.setCheckable(True)
-        self.regenerate_btn.setFixedHeight(40)
-        self.regenerate_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #aaaaaa;
-                border: 2px solid #555555;
-                border-radius: 6px;
-                padding: 0px 20px;
-                font-size: 13px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #3a3a3a;
-                color: white;
-                border-color: #666666;
-            }
-            QPushButton:checked {
-                background-color: #3a3a3a;
-                color: white;
-                border-color: #e74c3c;
-            }
-        """)
-        self.regenerate_btn.clicked.connect(lambda: self._set_use_existing(False))
-        options_btn_layout.addWidget(self.regenerate_btn)
+    # --- Wizard contract (kept for the SetupWizard navigation glue) ---
 
-        existing_layout.addWidget(options_container)
-        content_layout.addWidget(self.existing_banner)
-
-        # ===== Javadocs Options Container (hidden when using existing) =====
-        self.javadocs_options = QWidget()
-        javadocs_options_layout = QVBoxLayout(self.javadocs_options)
-        javadocs_options_layout.setContentsMargins(0, 0, 0, 0)
-        javadocs_options_layout.setSpacing(20)
-
-        # Enable Javadocs toggle row (only shown for fresh installs, not regenerate)
-        self.javadocs_toggle_row = QWidget()
-        toggle_layout = QHBoxLayout(self.javadocs_toggle_row)
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_layout.setSpacing(12)
-
-        self.javadocs_toggle = ToggleSwitch(checked=False)  # Off by default (optional)
-        self.javadocs_toggle.connect_toggled(self.toggle_options)
-        toggle_layout.addWidget(self.javadocs_toggle)
-
-        toggle_text = QWidget()
-        toggle_text_layout = QVBoxLayout(toggle_text)
-        toggle_text_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_text_layout.setSpacing(2)
-
-        toggle_label = QLabel("Generate Javadocs")
-        toggle_label.setStyleSheet("font-size: 14px; font-weight: bold; color: white;")
-        toggle_text_layout.addWidget(toggle_label)
-
-        toggle_hint = QLabel("Optional - requires JDK (will download if needed)")
-        toggle_hint.setStyleSheet("font-size: 11px; color: #888888;")
-        toggle_text_layout.addWidget(toggle_hint)
-
-        toggle_layout.addWidget(toggle_text)
-        toggle_layout.addStretch()
-        javadocs_options_layout.addWidget(self.javadocs_toggle_row)
-
-        # Options section (shown when enabled)
-        self.options_section = QWidget()
-        options_layout = QVBoxLayout(self.options_section)
-        options_layout.setContentsMargins(0, 0, 0, 0)
-        options_layout.setSpacing(15)
-
-        # Include private members option
-        private_row = QWidget()
-        private_layout = QHBoxLayout(private_row)
-        private_layout.setContentsMargins(0, 0, 0, 0)
-        private_layout.setSpacing(12)
-
-        self.private_toggle = ToggleSwitch(checked=False)
-        private_layout.addWidget(self.private_toggle)
-
-        private_text = QWidget()
-        private_text_layout = QVBoxLayout(private_text)
-        private_text_layout.setContentsMargins(0, 0, 0, 0)
-        private_text_layout.setSpacing(2)
-
-        private_label = QLabel("Include private members")
-        private_label.setStyleSheet("font-size: 14px; font-weight: bold; color: white;")
-        private_text_layout.addWidget(private_label)
-
-        private_hint = QLabel("Show private fields and methods in documentation")
-        private_hint.setStyleSheet("font-size: 11px; color: #888888;")
-        private_text_layout.addWidget(private_hint)
-
-        private_layout.addWidget(private_text)
-        private_layout.addStretch()
-        options_layout.addWidget(private_row)
-
-        # Add opacity effect to options section
-        self.options_opacity = QGraphicsOpacityEffect(self.options_section)
-        self.options_opacity.setOpacity(0.4)  # Start faded since toggle is off
-        self.options_section.setGraphicsEffect(self.options_opacity)
-        self.options_section.setEnabled(False)
-
-        javadocs_options_layout.addWidget(self.options_section)
-        content_layout.addWidget(self.javadocs_options)
-
-        # Center the content
-        center_container = QWidget()
-        center_layout = QHBoxLayout(center_container)
-        center_layout.setContentsMargins(0, 0, 0, 0)
-        center_layout.addStretch()
-        content_container.setFixedWidth(340)
-        center_layout.addWidget(content_container)
-        center_layout.addStretch()
-        settings_layout.addWidget(center_container)
-
-        settings_layout.addStretch()
-
-        # Note at bottom
-        self.note = QLabel("Note: Requires decompiled code from previous step")
-        self.note.setStyleSheet("font-size: 12px; color: #666666;")
-        self.note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        settings_layout.addWidget(self.note)
-
-        self.stack.addWidget(self.settings_view)
-
-        # ===== Terminal View (index 1) =====
-        self.terminal_view = QWidget()
-        terminal_layout = QVBoxLayout(self.terminal_view)
-        terminal_layout.setContentsMargins(0, 0, 0, 0)
-        terminal_layout.setSpacing(10)
-
-        # Terminal widget
-        self.terminal = TerminalWidget()
-        terminal_layout.addWidget(self.terminal, 1)
-
-        # Progress info row
-        self.progress_row = QWidget()
-        progress_layout = QHBoxLayout(self.progress_row)
-        progress_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.progress_label = QLabel("Initializing...")
-        self.progress_label.setStyleSheet("font-size: 12px; color: #888888;")
-        progress_layout.addWidget(self.progress_label)
-        progress_layout.addStretch()
-
-        self.file_count_label = QLabel("")
-        self.file_count_label.setStyleSheet("font-size: 12px; color: #3498db; font-weight: bold;")
-        progress_layout.addWidget(self.file_count_label)
-
-        terminal_layout.addWidget(self.progress_row)
-
-        # Error action row (hidden by default)
-        self.error_actions = QWidget()
-        self.error_actions.hide()
-        error_layout = QHBoxLayout(self.error_actions)
-        error_layout.setContentsMargins(0, 10, 0, 0)
-        error_layout.setSpacing(10)
-
-        self.open_log_btn = QPushButton("Open Log File")
-        self.open_log_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: #aaaaaa;
-                border: 1px solid #555555;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #3a3a3a;
-                color: white;
-            }
-        """)
-        self.open_log_btn.clicked.connect(self.open_log_file)
-        error_layout.addWidget(self.open_log_btn)
-
-        self.retry_btn = QPushButton("Retry")
-        self.retry_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #1f6aa5;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
-        self.retry_btn.clicked.connect(self.retry_generate)
-        error_layout.addWidget(self.retry_btn)
-
-        error_layout.addStretch()
-        terminal_layout.addWidget(self.error_actions)
-
-        self.stack.addWidget(self.terminal_view)
-
-    def set_paths(self, toolkit_path: str, ram_gb: int = 8, local_java_path: str = None):
-        """Set the paths and settings needed for Javadocs generation."""
-        self._toolkit_path = toolkit_path
-        self._ram_gb = ram_gb
-        self._local_java_path = local_java_path
-
-        # Check for existing javadocs
-        if toolkit_path:
-            javadocs_dir = Path(toolkit_path) / "javadocs"
-            index_html = javadocs_dir / "index.html"
-            if javadocs_dir.exists() and index_html.exists():
-                self._has_existing = True
-                self._use_existing = True
-                self.existing_banner.show()
-                self.javadocs_options.hide()
-                self.note.hide()
-            else:
-                # Fresh install - show toggle so user can choose to skip
-                self._has_existing = False
-                self.existing_banner.hide()
-                self.javadocs_options.show()
-                self.javadocs_toggle_row.show()
-                self.note.show()
-
-        # Update button state
+    def set_paths(self, toolkit_path: str | None = None, ram_gb: int = 8,
+                  local_java_path: str | None = None):
+        # Nothing to install; just refresh the active-channel hint in case the
+        # user flipped channels in DatabasePage.
+        self._refresh_channel_label()
         if self._button_callback:
             self._button_callback()
 
-    def _set_use_existing(self, use_existing: bool):
-        """Toggle between using existing javadocs or regenerating."""
-        self._use_existing = use_existing
+    def start_generate(self):
+        # No-op: there is no generation. Wizard's action handler may call this
+        # if should_run_action() ever returns True; keep it harmless.
+        pass
 
-        # Update button visual states
-        self.use_existing_btn.setChecked(use_existing)
-        self.regenerate_btn.setChecked(not use_existing)
+    def cancel_generate(self):
+        pass
 
-        # Update button styles
-        if use_existing:
-            self.use_existing_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #1f6aa5;
-                    color: white;
-                    border: 2px solid #3498db;
-                    border-radius: 6px;
-                    padding: 0px 20px;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #2980b9;
-                    border-color: #5dade2;
-                }
-            """)
-            self.regenerate_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: transparent;
-                    color: #aaaaaa;
-                    border: 2px solid #555555;
-                    border-radius: 6px;
-                    padding: 0px 20px;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #3a3a3a;
-                    color: white;
-                    border-color: #666666;
-                }
-            """)
-            # Hide generate options when using existing
-            self.javadocs_options.hide()
-            self.note.hide()
-        else:
-            self.use_existing_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: transparent;
-                    color: #aaaaaa;
-                    border: 2px solid #555555;
-                    border-radius: 6px;
-                    padding: 0px 20px;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #3a3a3a;
-                    color: white;
-                    border-color: #666666;
-                }
-            """)
-            self.regenerate_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #c0392b;
-                    color: white;
-                    border: 2px solid #e74c3c;
-                    border-radius: 6px;
-                    padding: 0px 20px;
-                    font-size: 13px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #e74c3c;
-                    border-color: #ec7063;
-                }
-            """)
-            # Show private members option when regenerating (no toggle needed - they chose to regenerate)
-            self.javadocs_options.show()
-            self.javadocs_toggle_row.hide()  # Hide toggle - regenerate implies they want javadocs
-            self.options_section.show()
-            self.options_section.setEnabled(True)
-            self.options_opacity.setOpacity(1.0)
-            self.note.show()
-            self.javadocs_toggle.setChecked(True)
+    def should_run_action(self) -> bool:
+        return False
 
-        # Notify wizard to update button text
-        if self._button_callback:
-            self._button_callback()
+    def get_state(self) -> str:
+        return self._state
 
-    def toggle_options(self, enabled: bool):
-        """Enable/disable options based on toggle."""
-        self.options_section.setEnabled(enabled)
-        self.options_opacity.setOpacity(1.0 if enabled else 0.4)
-        # Notify wizard to update button text
-        if self._button_callback:
-            self._button_callback()
+    def get_settings(self) -> dict:
+        return {"enabled": False, "include_private": False, "completed": True}
 
     def set_button_callback(self, callback):
-        """Set callback to notify wizard of button changes."""
         self._button_callback = callback
 
     def set_back_button_callback(self, callback):
-        """Set callback for back button changes."""
         self._back_button_callback = callback
-
-    def get_state(self) -> str:
-        """Get current state."""
-        return self._state
-
-    def get_next_button_config(self) -> dict:
-        """Return config for the next button based on current state."""
-        if self._state == "running":
-            return {
-                "text": "Running...",
-                "style": "disabled",
-                "enabled": False,
-            }
-        elif self._state == "completed":
-            return {
-                "text": "Next",
-                "style": "primary",
-                "enabled": True,
-            }
-        elif self._state == "failed":
-            return {
-                "text": "Next",
-                "style": "primary",
-                "enabled": True,  # Allow proceeding even on failure
-            }
-        else:  # idle
-            # If using existing javadocs, just navigate
-            if self._has_existing and self._use_existing:
-                return {
-                    "text": "Next",
-                    "style": "primary",
-                    "enabled": True,
-                }
-            elif self.javadocs_toggle.isChecked():
-                return {
-                    "text": "Generate",
-                    "style": "action",
-                    "enabled": True,
-                }
-            else:
-                return {
-                    "text": "Skip",
-                    "style": "secondary",
-                    "enabled": True,
-                }
-
-    def get_back_button_config(self) -> dict:
-        """Return config for the back button based on current state."""
-        if self._state == "running":
-            return {
-                "text": "Cancel",
-                "style": "danger",
-                "enabled": True,
-            }
-        else:
-            return {
-                "text": "Back",
-                "style": "default",
-                "enabled": True,
-            }
-
-    def should_run_action(self) -> bool:
-        """Check if clicking Next should run an action instead of navigating."""
-        # Don't run action if using existing javadocs
-        if self._has_existing and self._use_existing:
-            return False
-        return self._state == "idle" and self.javadocs_toggle.isChecked()
-
-    def start_generate(self):
-        """Start the Javadocs generation process."""
-        if self._state == "running":
-            return
-
-        self._state = "running"
-        self._file_count = 0
-        self._generated_count = 0
-        self._in_generating_phase = False
-
-        # Switch to terminal view
-        self.stack.setCurrentIndex(1)
-        self.desc.setText("Generating Javadocs from decompiled source...")
-        self.terminal.clear_terminal()
-        self.error_actions.hide()
-        self.progress_label.setText("Starting...")
-        self.progress_label.setStyleSheet("font-size: 12px; color: #888888;")
-        self.file_count_label.setText("")
-
-        # Notify wizard immediately so button updates
-        if self._button_callback:
-            self._button_callback()
-        if self._back_button_callback:
-            self._back_button_callback()
-
-        # Defer the actual work to next event loop tick for responsive UI
-        QTimer.singleShot(0, self._do_generate_work)
-
-    def _do_generate_work(self):
-        """Actual Javadocs generation work - called after UI has updated."""
-        # Setup log file
-        toolkit_path = Path(self._toolkit_path)
-        logs_dir = toolkit_path / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._log_file_path = logs_dir / f"javadocs_{timestamp}.log"
-
-        # Log header
-        self.terminal.append_info("=" * 60)
-        self.terminal.append_info("Hytale Toolkit - Javadocs Generation Log")
-        self.terminal.append_info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        self.terminal.append_info("=" * 60)
-        self.terminal.append_line("")
-
-        # Log settings
-        include_private = self.private_toggle.isChecked()
-        self.terminal.append_line(f"Toolkit Path: {self._toolkit_path}")
-        self.terminal.append_line(f"RAM Allocation: {self._ram_gb} GB")
-        self.terminal.append_line(f"Include Private: {include_private}")
-        self.terminal.append_line("")
-        self.terminal.append_warning("Note: Javadoc processes 15,000+ files silently at first.")
-        self.terminal.append_warning("This may take 5-10 minutes. Let it cook!")
-        self.terminal.append_line("")
-
-        # Verify paths
-        decompiled_dir = toolkit_path / "decompiled"
-        javadocs_dir = toolkit_path / "javadocs"
-        hytale_src = decompiled_dir / "com" / "hypixel"
-
-        if not decompiled_dir.exists():
-            self.terminal.append_error("ERROR: No decompiled code found.")
-            self.terminal.append_error("Please run decompilation first.")
-            self._finish_with_error("Decompiled code not found")
-            return
-
-        if not hytale_src.exists():
-            self.terminal.append_error(f"ERROR: Hytale source not found at {hytale_src}")
-            self._finish_with_error("Hytale source not found")
-            return
-
-        # Clear existing javadocs directory if exists
-        if javadocs_dir.exists():
-            self.terminal.append_warning("Removing existing Javadocs...")
-            shutil.rmtree(javadocs_dir)
-
-        javadocs_dir.mkdir(parents=True, exist_ok=True)
-
-        # Fix decompilation artifacts before generating javadocs
-        self.terminal.append_line("")
-        fix_decompiled_files(decompiled_dir, self.terminal)
-        self.terminal.append_line("")
-
-        # Find Java files (excluding package-info.java)
-        java_files = [f for f in hytale_src.rglob("*.java") if f.name != "package-info.java"]
-        self._total_files = len(java_files)
-        self.terminal.append_line(f"Found {self._total_files} Hytale Java files")
-        self.terminal.append_line("")
-
-        # Create argfile for javadoc (avoid command line length limits)
-        argfile = toolkit_path / ".javadoc-files.txt"
-        with open(argfile, "w") as f:
-            for java_file in java_files:
-                path_str = str(java_file).replace("\\", "/")
-                f.write(f'"{path_str}"\n')
-
-        self.terminal.append_info("Starting javadoc generation...")
-        self.terminal.append_line("")
-
-        # Start the javadoc process
-        self._process = QProcess(self)
-        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self._process.readyReadStandardOutput.connect(self._handle_output)
-        self._process.finished.connect(self._handle_finished)
-        self._process.errorOccurred.connect(self._handle_error)
-
-        # Strip PyInstaller's LD_LIBRARY_PATH so system tools use their own libs
-        clean_env = _clean_pyinstaller_env()
-        if clean_env:
-            self._process.setProcessEnvironment(clean_env)
-
-        # Build command
-        args = [
-            f"-J-Xms2G",
-            f"-J-Xmx{self._ram_gb}G",
-            "-d", str(javadocs_dir),
-            "-Xdoclint:none",
-            "--ignore-source-errors",
-            "-verbose",  # Show progress
-        ]
-
-        if include_private:
-            args.append("-private")
-
-        args.append(f"@{argfile}")
-
-        # Start heartbeat timer to show activity
-        self._heartbeat_count = 0
-        self._status_text = "Processing..."  # Base status text
-        self._heartbeat_timer = QTimer(self)
-        self._heartbeat_timer.timeout.connect(self._show_heartbeat)
-        self._heartbeat_timer.start(1000)  # Every 1 second
-
-        # Show immediate feedback
-        self.progress_label.setText("Processing... (0s)")
-
-        # Use local JDK if available, otherwise system javadoc
-        if self._local_java_path:
-            # Get javadoc from the same directory as java
-            java_bin_dir = Path(self._local_java_path).parent
-            if sys.platform == "win32":
-                javadoc_cmd = str(java_bin_dir / "javadoc.exe")
-            else:
-                javadoc_cmd = str(java_bin_dir / "javadoc")
-        else:
-            javadoc_cmd = "javadoc"
-
-        self._process.start(javadoc_cmd, args)
-
-    def _set_status(self, text: str):
-        """Set the status text (heartbeat will append elapsed time)."""
-        self._status_text = text
-        self._update_progress_label()
-
-    def _update_progress_label(self):
-        """Update progress label with status and elapsed time."""
-        elapsed = self._heartbeat_count
-        mins = elapsed // 60
-        secs = elapsed % 60
-        if mins > 0:
-            self.progress_label.setText(f"{self._status_text} ({mins}m {secs}s)")
-        else:
-            self.progress_label.setText(f"{self._status_text} ({secs}s)")
-
-    def _show_heartbeat(self):
-        """Show that the process is still running."""
-        if self._state != "running":
-            if self._heartbeat_timer:
-                self._heartbeat_timer.stop()
-            return
-        self._heartbeat_count += 1
-        self._update_progress_label()
-
-    def cancel_generate(self):
-        """Cancel the running generation."""
-        if self._process and self._state == "running":
-            # Stop heartbeat timer
-            if hasattr(self, '_heartbeat_timer') and self._heartbeat_timer:
-                self._heartbeat_timer.stop()
-                self._heartbeat_timer = None
-
-            self.terminal.append_warning("\nCancelling Javadocs generation...")
-            self._process.kill()
-            self._state = "idle"
-            self.stack.setCurrentIndex(0)
-            self.desc.setText(
-                "Generate browsable HTML documentation of all classes and methods.\n"
-                "Useful for exploring the Hytale codebase in a browser."
-            )
-            if self._button_callback:
-                self._button_callback()
-            if self._back_button_callback:
-                self._back_button_callback()
-
-    def _handle_output(self):
-        """Handle process output."""
-        if not self._process:
-            return
-
-        data = self._process.readAllStandardOutput().data().decode('utf-8', errors='replace')
-        for line in data.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
-            # Parse progress - Loading is 0-50%, Generating is 50-99%
-            if "Loading source file" in line:
-                self._file_count += 1
-                parts = line.split("Loading source file")[-1].strip()
-                class_name = parts.split("/")[-1].replace(".java...", "")
-                # Loading phase is 0-50%
-                percent = (self._file_count * 50) // max(self._total_files, 1)
-                self._set_status(f"Loading: {class_name[:40]}")
-                self.file_count_label.setText(f"{percent}%")
-
-                # Log every 50th file
-                if self._file_count % 50 == 0:
-                    self.terminal.append_line(f"[{percent}%] {class_name}")
-            elif "Generating" in line:
-                # Track generating phase
-                if not self._in_generating_phase:
-                    self._in_generating_phase = True
-                    self.terminal.append_line("")
-                    self.terminal.append_info("Generating HTML documentation...")
-
-                self._generated_count += 1
-                gen_file = line.split("/")[-1].replace("...", "") if "/" in line else "docs"
-                self._set_status(f"Generating: {gen_file[:40]}")
-
-                # Generating phase is 50-99% (estimate total gen files ~ total source files)
-                gen_percent = 50 + (self._generated_count * 49) // max(self._total_files, 1)
-                gen_percent = min(gen_percent, 99)  # Cap at 99% until truly complete
-                self.file_count_label.setText(f"{gen_percent}%")
-            elif "error:" in line.lower() and "warning" not in line.lower():
-                # Suppress known third-party errors
-                suppressed = ["io.sentry", "io.netty", "it.unimi.dsi", "javax.annotation",
-                             "com.google.common", "org.bson", "ch.randelshofer", "joptsimple",
-                             "org.bouncycastle", "com.github.luben", "com.nimbusds", "org.slf4j",
-                             "cannot find symbol", "does not exist"]
-                if not any(s in line for s in suppressed):
-                    self.terminal.append_error(line)
-            elif "warning" in line.lower():
-                pass  # Suppress warnings
-            else:
-                self.terminal.append_line(line)
-
-    def _handle_finished(self, exit_code, exit_status):
-        """Handle process completion."""
-        # Stop heartbeat timer
-        if hasattr(self, '_heartbeat_timer') and self._heartbeat_timer:
-            self._heartbeat_timer.stop()
-            self._heartbeat_timer = None
-
-        self.terminal.append_line("")
-
-        # Check if javadocs were actually generated
-        toolkit_path = Path(self._toolkit_path)
-        javadocs_dir = toolkit_path / "javadocs"
-        index_html = javadocs_dir / "index.html"
-
-        if index_html.exists():
-            self._state = "completed"
-            generated_files = list(javadocs_dir.glob("**/*.html"))
-            self.terminal.append_success("=" * 60)
-            self.terminal.append_success("Javadocs generated successfully!")
-            self.terminal.append_success(f"Generated {len(generated_files)} HTML files")
-            self.terminal.append_success("=" * 60)
-
-            self.desc.setText("Javadocs generated successfully!")
-            self.progress_label.setText("Complete!")
-            self.progress_label.setStyleSheet("font-size: 12px; color: #22C55E; font-weight: bold;")
-            self.file_count_label.setText(f"{len(generated_files)} files")
-        else:
-            self._finish_with_error(f"Generation failed - no output produced (exit code {exit_code})")
-            return
-
-        # Save log file
-        self._save_log()
-
-        # Clean up argfile
-        argfile = toolkit_path / ".javadoc-files.txt"
-        if argfile.exists():
-            argfile.unlink()
-
-        # Notify wizard
-        if self._button_callback:
-            self._button_callback()
-        if self._back_button_callback:
-            self._back_button_callback()
-
-    def _handle_error(self, error):
-        """Handle process error."""
-        error_messages = {
-            QProcess.ProcessError.FailedToStart: "Failed to start javadoc. Is JDK installed?",
-            QProcess.ProcessError.Crashed: "Process crashed unexpectedly",
-            QProcess.ProcessError.Timedout: "Process timed out",
-            QProcess.ProcessError.WriteError: "Write error",
-            QProcess.ProcessError.ReadError: "Read error",
-            QProcess.ProcessError.UnknownError: "Unknown error",
-        }
-        msg = error_messages.get(error, f"Error: {error}")
-        self.terminal.append_error(f"\nERROR: {msg}")
-        self._finish_with_error(msg)
-
-    def _finish_with_error(self, error_msg: str):
-        """Handle generation failure."""
-        self._state = "failed"
-        self.terminal.append_line("")
-        self.terminal.append_error("=" * 60)
-        self.terminal.append_error(f"Javadocs generation failed: {error_msg}")
-        self.terminal.append_error("=" * 60)
-
-        self.desc.setText("Generation failed. You can retry or continue without it.")
-        self.progress_label.setText("Failed")
-        self.progress_label.setStyleSheet("font-size: 12px; color: #EF4444; font-weight: bold;")
-        self.error_actions.show()
-
-        self._save_log()
-
-        if self._button_callback:
-            self._button_callback()
-        if self._back_button_callback:
-            self._back_button_callback()
-
-    def _save_log(self):
-        """Save the log to file."""
-        if self._log_file_path:
-            try:
-                with open(self._log_file_path, 'w', encoding='utf-8') as f:
-                    f.write(self.terminal.get_full_log())
-            except Exception as e:
-                self.terminal.append_warning(f"Failed to save log: {e}")
-
-    def copy_log_to_clipboard(self):
-        """Copy the full log to clipboard."""
-        clipboard = QApplication.clipboard()
-        clipboard.setText(self.terminal.get_full_log())
-        self.copy_log_btn.setText("Copied!")
-
-    def open_log_file(self):
-        """Open the log file in the default text editor."""
-        if self._log_file_path and self._log_file_path.exists():
-            if sys.platform == "win32":
-                os.startfile(str(self._log_file_path))
-            elif sys.platform == "darwin":
-                import subprocess
-                subprocess.run(["open", str(self._log_file_path)])
-            else:
-                import subprocess
-                subprocess.run(["xdg-open", str(self._log_file_path)])
-
-    def retry_generate(self):
-        """Retry the generation."""
-        self._state = "idle"
-        self.progress_label.setStyleSheet("font-size: 12px; color: #888888;")
-        self.start_generate()
-
-    def get_settings(self) -> dict:
-        """Return the Javadocs settings."""
-        return {
-            "enabled": self.javadocs_toggle.isChecked(),
-            "include_private": self.private_toggle.isChecked() if self.javadocs_toggle.isChecked() else False,
-            "completed": self._state == "completed",
-        }
 
 
 class ProviderCard(QFrame):
@@ -7206,7 +6453,10 @@ class SetupWizard(QMainWindow):
             if client_data_dir.exists():
                 config["HYTALE_CLIENT_DATA_DIR"] = str(client_data_dir)
 
-        config["HYTALE_DECOMPILED_DIR"] = str(toolkit_path / "decompiled")
+        # Decompiled output is per-channel; point at the channel matching the
+        # selected Hytale install (release vs prerelease).
+        _channel = _dist.detect_channel_from_hytale_path(hytale_path or "")
+        config["HYTALE_DECOMPILED_DIR"] = str(toolkit_path / "decompiled" / _channel)
 
         # Provider settings
         if hasattr(provider_page, 'get_settings'):

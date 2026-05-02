@@ -99,6 +99,24 @@ def db_tarball_name(provider: str, channel: str) -> str:
     return f"lancedb-{provider}-{channel}.tar.gz"
 
 
+def detect_channel_from_hytale_path(path: str | Path) -> str:
+    """Infer the Hytale channel from an install path.
+
+    Hypixel's launcher splits release / prerelease at the install root:
+        ~/.../Hytale/install/release/...     -> release
+        ~/.../Hytale/install/pre-release/... -> prerelease
+
+    Falls back to DEFAULT_CHANNEL when neither token is present.
+    """
+    s = str(path).replace("\\", "/").lower()
+    # Order matters: "/release/" is a substring of "/pre-release/" inverted check.
+    if "/pre-release/" in s or "/prerelease/" in s:
+        return "prerelease"
+    if "/release/" in s:
+        return "release"
+    return DEFAULT_CHANNEL
+
+
 # =============================================================================
 # CLI: `python -m distribution channel [release|prerelease]`
 #  - no arg  -> prints active channel
