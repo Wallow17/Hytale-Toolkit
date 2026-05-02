@@ -162,12 +162,14 @@ def _clean_subprocess_env() -> dict | None:
 # Update Checker
 # =============================================================================
 
-GITHUB_REPO = "logan-mcduffie/Hytale-Toolkit"
-RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+import distribution as _dist
+
+GITHUB_REPO = _dist.github_repo()
+RELEASES_URL = _dist.releases_api_url()
+RELEASES_PAGE = _dist.releases_page_url()
 
 # CDN for database downloads
-CDN_BASE_URL = "https://cdn.loganmcduffie.com"
+CDN_BASE_URL = _dist.cdn_base_url()
 
 
 def compare_versions(current: str, latest: str) -> int:
@@ -1361,7 +1363,7 @@ class HytalePathPage(QWidget):
             self._process.setProcessEnvironment(clean_env)
 
         # Use git clone
-        repo_url = "https://github.com/logan-mcduffie/Hytale-Toolkit.git"
+        repo_url = _dist.git_clone_url()
         folder_name = toolkit_path.name
 
         # On Windows, use cmd /c to properly find git in PATH
@@ -4592,7 +4594,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-CDN_BASE_URL = "https://cdn.loganmcduffie.com"
+CDN_BASE_URL = "{CDN_BASE_URL}"
 provider = "{self._provider}"
 dest_dir = Path(r"{provider_dir}")
 

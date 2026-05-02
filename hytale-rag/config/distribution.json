@@ -1,0 +1,9 @@
+{
+  "github_repo": "Wallow17/Hytale-Toolkit",
+  "git_clone_url": "https://github.com/Wallow17/Hytale-Toolkit.git",
+  "cdn_base_url": "https://github.com/Wallow17/Hytale-Toolkit/releases/download/db-latest",
+  "javadocs": {
+    "release_url": "https://release.server.docs.hytale.com/",
+    "prerelease_url": "https://prerelease.server.docs.hytale.com/"
+  }
+}

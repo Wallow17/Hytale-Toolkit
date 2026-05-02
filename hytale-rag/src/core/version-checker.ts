@@ -5,7 +5,8 @@
  * the latest GitHub release. Results are cached to avoid excessive API calls.
  */
 
-const GITHUB_REPO = "logan-mcduffie/Hytale-Toolkit";
+import { githubRepo as defaultGithubRepo } from "../distribution.js";
+
 const CACHE_TTL_MS = 3600000; // 1 hour
 const FETCH_TIMEOUT_MS = 5000; // 5 seconds
 
@@ -59,7 +60,7 @@ export class VersionChecker {
   private readonly cacheTtlMs: number;
 
   constructor(options: VersionCheckerOptions) {
-    this.githubRepo = options.githubRepo ?? GITHUB_REPO;
+    this.githubRepo = options.githubRepo ?? defaultGithubRepo();
     this.currentVersion = options.currentVersion;
     this.cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
   }

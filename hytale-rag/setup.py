@@ -70,8 +70,10 @@ log_file = None
 #  Configuration
 # ============================================================================
 
-GITHUB_REPO = "logan-mcduffie/Hytale-Toolkit"
-CDN_BASE_URL = "https://cdn.loganmcduffie.com"
+import distribution as _dist
+
+GITHUB_REPO = _dist.github_repo()
+CDN_BASE_URL = _dist.cdn_base_url()
 OLLAMA_MODEL = "nomic-embed-text"
 JDK_VERSION = 21  # LTS version for javadoc generation
 

@@ -27,6 +27,7 @@ import { startMCPServer } from "./servers/mcp/index.js";
 import { createRESTServer, startRESTServer } from "./servers/rest/index.js";
 import { createOpenAIServer, startOpenAIServer } from "./servers/openai/index.js";
 import { VersionChecker } from "./core/version-checker.js";
+import { releasesPageUrl } from "./distribution.js";
 
 /**
  * Get current version from package.json
@@ -146,7 +147,7 @@ function getDirectorySize(dirPath: string): number {
  * Returns an error message if the database is missing or corrupted
  */
 function validateDatabase(dbPath: string): string | undefined {
-  const releaseUrl = "https://github.com/logan-mcduffie/Hytale-Toolkit/releases";
+  const releaseUrl = releasesPageUrl();
 
   // Check if database directory exists
   if (!fs.existsSync(dbPath)) {

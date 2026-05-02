@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+sys.path.insert(0, str(SCRIPT_DIR / "hytale-rag"))
+import distribution as _dist  # noqa: E402
 BUILD_DIR = SCRIPT_DIR / "build"
 DIST_DIR = SCRIPT_DIR / "dist"
 VERSION_FILE = SCRIPT_DIR / "VERSION"
@@ -45,6 +47,8 @@ TOOLS = [
             (str(SCRIPT_DIR / "hytale-rag" / "assets" / "sidebar_bg.jpg"), "assets"),
             (str(SCRIPT_DIR / "hytale-rag" / "assets" / "icons"), "assets/icons"),
             (str(SCRIPT_DIR / "hytale-rag" / "mcp_config.py"), "."),  # MCP setup functions
+            (str(SCRIPT_DIR / "hytale-rag" / "distribution.py"), "."),  # Distribution config loader
+            (str(SCRIPT_DIR / "hytale-rag" / "config" / "distribution.json"), "."),  # Fork-specific URLs
         ],
     },
 ]
@@ -272,7 +276,7 @@ def create_github_release(version: str, assets: list[Path], changelog: str) -> b
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=SCRIPT_DIR, shell=use_shell)
         if result.returncode == 0:
-            print(f"  Release created: https://github.com/logan-mcduffie/Hytale-Toolkit/releases/tag/v{version}")
+            print(f"  Release created: https://github.com/{_dist.github_repo()}/releases/tag/v{version}")
             return True
         else:
             print(f"  ERROR: {result.stderr}")
