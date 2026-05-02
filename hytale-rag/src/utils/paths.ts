@@ -1,20 +1,36 @@
 import * as fs from "fs";
 import { resolve } from "path";
+import { getActiveChannel } from "./channel.js";
 
 /**
- * Format a code file path for display.
- * If the user has decompiled code locally (via HYTALE_DECOMPILED_DIR env var),
- * returns the full path to their local file. Otherwise returns the relative path.
+ * Resolve the on-disk decompiled-code dir for the active channel.
+ *
+ * Priority:
+ *   1. HYTALE_DECOMPILED_BASE  -> appended with the active channel
+ *      (e.g. ~/.hytale-toolkit/decompiled + "/release")
+ *   2. HYTALE_DECOMPILED_DIR   -> used as-is (legacy single-channel installs)
+ */
+function getDecompiledDir(): string | undefined {
+  const base = process.env.HYTALE_DECOMPILED_BASE;
+  if (base) {
+    return resolve(base, getActiveChannel());
+  }
+  return process.env.HYTALE_DECOMPILED_DIR;
+}
+
+/**
+ * Format a code file path for display. When the user has decompiled code
+ * locally (via HYTALE_DECOMPILED_BASE or legacy HYTALE_DECOMPILED_DIR),
+ * returns the full path to their local file for the currently active channel.
  */
 export function resolveCodePath(relativePath: string): string {
-  const decompDir = process.env.HYTALE_DECOMPILED_DIR;
+  const decompDir = getDecompiledDir();
   if (decompDir) {
     const fullPath = resolve(decompDir, relativePath);
     if (fs.existsSync(fullPath)) {
       return fullPath;
     }
   }
-  // Fallback to relative path (user doesn't have local decompiled code)
   return relativePath;
 }
 

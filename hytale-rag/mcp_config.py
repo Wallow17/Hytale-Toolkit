@@ -209,6 +209,24 @@ npx tsx src/index.ts
         ps1_path.write_text(ps1_content)
         if not quiet:
             print(f"    Created {ps1_path}")
+
+        # Channel switcher (Windows). Run with `pwsh -File hytale-channel.ps1 prerelease`
+        # or no arg to print the current active channel.
+        ch_ps1_path = script_dir / "hytale-channel.ps1"
+        ch_ps1_content = f"""# Hytale Toolkit - active channel switcher (Windows)
+param([string]$Channel)
+Set-Location '{script_dir}'
+if ([string]::IsNullOrEmpty($Channel)) {{
+    python -m distribution channel
+}} else {{
+    python -m distribution channel $Channel
+    Write-Host ""
+    Write-Host "Restart Claude Code (or your MCP host) for the change to take effect."
+}}
+"""
+        ch_ps1_path.write_text(ch_ps1_content)
+        if not quiet:
+            print(f"    Created {ch_ps1_path}")
     else:
         sh_path = script_dir / "start-mcp.sh"
         sh_content = f"""#!/bin/bash
@@ -224,6 +242,24 @@ npx tsx src/index.ts
         sh_path.chmod(0o755)
         if not quiet:
             print(f"    Created {sh_path}")
+
+        # Channel switcher (POSIX). Run from anywhere as
+        #   ~/.hytale-toolkit/hytale-rag/hytale-channel [release|prerelease]
+        # No arg prints the current active channel.
+        ch_sh_path = script_dir / "hytale-channel"
+        ch_sh_content = f"""#!/bin/bash
+# Hytale Toolkit - active channel switcher
+cd '{script_dir}' || exit 1
+python3 -m distribution channel "$@"
+if [ $# -gt 0 ]; then
+    echo ""
+    echo "Restart Claude Code (or your MCP host) for the change to take effect."
+fi
+"""
+        ch_sh_path.write_text(ch_sh_content)
+        ch_sh_path.chmod(0o755)
+        if not quiet:
+            print(f"    Created {ch_sh_path}")
 
 
 # ============================================================================

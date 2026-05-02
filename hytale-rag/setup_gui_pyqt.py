@@ -931,6 +931,76 @@ class HytalePathPage(QWidget):
         hytale_hint.setStyleSheet("font-size: 11px; color: #888888;")
         hytale_layout.addWidget(hytale_hint)
 
+        # ===== Channel picker (populated when both channels are auto-detected) =====
+        # Hidden by default — shown only when scan_hytale_channels finds 2 channels
+        # under the same install root. Picking a channel fills hytale_input below.
+        self._detected_channels: dict[str, Path] = {}
+        self._selected_channel: str | None = None  # "release" | "prerelease" | None
+        self._setup_both: bool = False
+
+        self.channel_card = QWidget()
+        self.channel_card.hide()
+        channel_card_layout = QVBoxLayout(self.channel_card)
+        channel_card_layout.setContentsMargins(0, 4, 0, 4)
+        channel_card_layout.setSpacing(6)
+
+        channel_header = QLabel("Detected channels — pick one")
+        channel_header.setStyleSheet("font-size: 12px; font-weight: bold; color: #22C55E;")
+        channel_card_layout.addWidget(channel_header)
+
+        channel_btn_row = QWidget()
+        channel_btn_layout = QHBoxLayout(channel_btn_row)
+        channel_btn_layout.setContentsMargins(0, 0, 0, 0)
+        channel_btn_layout.setSpacing(8)
+
+        def _make_channel_pick_btn(label: str, channel: str) -> QPushButton:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedHeight(34)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #aaaaaa;
+                    border: 2px solid #555555;
+                    border-radius: 6px;
+                    padding: 0 16px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-color: #666666;
+                }
+                QPushButton:checked {
+                    background-color: #1f6aa5;
+                    color: white;
+                    border-color: #3498db;
+                }
+            """)
+            btn.clicked.connect(lambda: self._select_detected_channel(channel))
+            return btn
+
+        self.channel_release_btn = _make_channel_pick_btn("Release", "release")
+        self.channel_prerelease_btn = _make_channel_pick_btn("Prerelease", "prerelease")
+        channel_btn_layout.addWidget(self.channel_release_btn)
+        channel_btn_layout.addWidget(self.channel_prerelease_btn)
+        channel_btn_layout.addStretch()
+        channel_card_layout.addWidget(channel_btn_row)
+
+        # "Setup both" checkbox: only meaningful when both channels exist.
+        # When checked, the wizard decompiles BOTH channels sequentially so the
+        # user can flip between them later without re-running setup.
+        self.setup_both_check = QCheckBox("Also set up the other channel (decompile both)")
+        self.setup_both_check.setStyleSheet(
+            "QCheckBox { color: #cccccc; font-size: 11px; }"
+            "QCheckBox::indicator { width: 14px; height: 14px; }"
+        )
+        self.setup_both_check.toggled.connect(self._on_setup_both_toggled)
+        channel_card_layout.addWidget(self.setup_both_check)
+
+        hytale_layout.addWidget(self.channel_card)
+
         # Path input row
         hytale_row = QWidget()
         hytale_row_layout = QHBoxLayout(hytale_row)
@@ -1083,6 +1153,53 @@ class HytalePathPage(QWidget):
         # Try to auto-detect Hytale installation
         self._auto_detect_hytale()
 
+    def _select_detected_channel(self, channel: str):
+        """User picked a channel from the auto-detected channel card.
+
+        Updates the path input (which triggers the existing validation chain)
+        and the visual selection state. Also re-asserts the "decompile both"
+        checkbox visibility based on whether 2 channels are present.
+        """
+        if channel not in self._detected_channels:
+            return
+        self._selected_channel = channel
+        self.channel_release_btn.setChecked(channel == "release")
+        self.channel_prerelease_btn.setChecked(channel == "prerelease")
+        # Replacing text fires textChanged → validate_hytale_path runs
+        self.hytale_input.setText(str(self._detected_channels[channel]))
+
+    def _on_setup_both_toggled(self, checked: bool):
+        """Stash the user's choice. Read by get_paths() at navigation time."""
+        # Only meaningful if 2 channels were detected; UI hides the checkbox
+        # otherwise so this is mostly defensive.
+        self._setup_both = bool(checked and len(self._detected_channels) >= 2)
+
+    def _populate_channel_card(self, install_root: Path):
+        """Render the channel picker if any channels were found under root."""
+        try:
+            channels = _dist.scan_hytale_channels(install_root)
+        except Exception:
+            channels = {}
+        self._detected_channels = channels
+
+        if not channels:
+            self.channel_card.hide()
+            return
+
+        # Show buttons only for channels that actually exist
+        self.channel_release_btn.setVisible("release" in channels)
+        self.channel_prerelease_btn.setVisible("prerelease" in channels)
+        # The "decompile both" checkbox only makes sense with both channels
+        self.setup_both_check.setVisible(len(channels) >= 2)
+        if len(channels) < 2:
+            self.setup_both_check.setChecked(False)
+
+        self.channel_card.show()
+
+        # Auto-select: prefer release, otherwise the only one present
+        default = "release" if "release" in channels else next(iter(channels))
+        self._select_detected_channel(default)
+
     def _auto_detect_hytale(self):
         """Try to find Hytale installation in common locations."""
         common_paths = []
@@ -1125,10 +1242,18 @@ class HytalePathPage(QWidget):
                 Path.home() / ".steam" / "steam" / "steamapps" / "common" / "Hytale" / "game" / "latest",
             ]
 
-        # Check each path for valid Hytale installation
+        # First pass: try to find an install ROOT (the parent of release/
+        # and pre-release/) so we can offer a channel picker. This is the
+        # preferred path on Hytale Launcher installs.
+        for path in common_paths:
+            root = _dist.find_hytale_install_root(path)
+            if root and _dist.scan_hytale_channels(root):
+                self._populate_channel_card(root)
+                return
+
+        # Fallback: legacy single-install detection (no channel concept).
         for path in common_paths:
             if path.exists():
-                # Check if it has the expected structure
                 client_dir = path / "Client"
                 server_dir = path / "Server"
                 assets_file = path / "Assets.zip"
@@ -1169,6 +1294,16 @@ class HytalePathPage(QWidget):
             self.hytale_path = None
             self._update_button()
             return
+
+        # If this path resolves to an install root with channels, refresh the
+        # picker (handy when user manually browses to a Hytale install dir).
+        # Don't recurse: only repopulate when nothing is already detected.
+        if not self._detected_channels:
+            root = _dist.find_hytale_install_root(path)
+            if root:
+                channels = _dist.scan_hytale_channels(root)
+                if channels and Path(path) != channels.get(self._selected_channel or "", Path("/__none__")):
+                    self._populate_channel_card(root)
 
         path_obj = Path(path)
         self.checklist_card.show()
@@ -1282,10 +1417,32 @@ class HytalePathPage(QWidget):
         return self.hytale_path is not None and self.toolkit_path is not None
 
     def get_paths(self) -> dict:
-        """Return the selected paths."""
+        """Return the selected paths and channel choice.
+
+        Keys:
+          hytale_path           Primary install path (matches selected channel)
+          toolkit_path          Where the toolkit is (or will be) installed
+          selected_channel      Channel the user picked (or detected from path)
+          secondary_hytale_path Other channel's install path when "setup both"
+                                is checked AND both channels were detected,
+                                else None
+        """
+        secondary = None
+        if self._setup_both and len(self._detected_channels) >= 2 and self._selected_channel:
+            other = "prerelease" if self._selected_channel == "release" else "release"
+            secondary = self._detected_channels.get(other)
+            secondary = str(secondary) if secondary else None
+
+        # If user typed a path manually (no picker), derive the channel from it.
+        channel = self._selected_channel
+        if not channel and self.hytale_path:
+            channel = _dist.detect_channel_from_hytale_path(self.hytale_path)
+
         return {
             "hytale_path": self.hytale_path,
             "toolkit_path": self.toolkit_path,
+            "selected_channel": channel,
+            "secondary_hytale_path": secondary,
         }
 
     def set_button_callback(self, callback):
@@ -1494,6 +1651,12 @@ class DecompilePage(QWidget):
         self._process = None
         self._hytale_path = None
         self._toolkit_path = None
+        # Optional second Hytale install (the OTHER channel) to decompile in
+        # the same wizard run. Populated by HytalePathPage when "Setup both" is
+        # checked. None means single-channel decompile.
+        self._secondary_hytale_path: str | None = None
+        # Queue of (hytale_path, channel) jobs for the active decompile run.
+        self._decompile_queue: list[tuple[str, str]] = []
         self._log_file_path = None
         self._class_count = 0
         self._has_existing = False
@@ -1931,21 +2094,35 @@ class DecompilePage(QWidget):
 
         self.stack.addWidget(self.terminal_view)
 
-    def set_paths(self, hytale_path: str, toolkit_path: str):
-        """Set the paths needed for decompilation."""
+    def set_paths(self, hytale_path: str, toolkit_path: str,
+                  secondary_hytale_path: str | None = None):
+        """Set the paths needed for decompilation.
+
+        When `secondary_hytale_path` is provided, the wizard decompiles BOTH
+        channels in sequence so a user can flip between them later without
+        re-running setup.
+        """
         self._hytale_path = hytale_path
         self._toolkit_path = toolkit_path
+        self._secondary_hytale_path = secondary_hytale_path
 
         # Check for Java installation
         self._check_java()
 
         # Check for existing decompiled code (per-channel layout).
-        # The Hytale install path tells us which channel this run will produce,
-        # so we only flag "existing" when that specific channel's dir is populated.
+        # When decompiling both, "existing" means BOTH channel dirs are populated.
         if toolkit_path:
-            channel = _dist.detect_channel_from_hytale_path(hytale_path or "")
-            decompiled_dir = Path(toolkit_path) / "decompiled" / channel
-            if decompiled_dir.exists() and any(decompiled_dir.iterdir()):
+            paths_to_check = [hytale_path]
+            if secondary_hytale_path:
+                paths_to_check.append(secondary_hytale_path)
+            channels = [
+                _dist.detect_channel_from_hytale_path(p or "") for p in paths_to_check
+            ]
+            decompiled_dirs = [Path(toolkit_path) / "decompiled" / ch for ch in channels]
+            all_present = all(
+                d.exists() and any(d.iterdir()) for d in decompiled_dirs
+            )
+            if all_present:
                 self._has_existing = True
                 self._use_existing = True
                 self.existing_banner.show()
@@ -2413,35 +2590,73 @@ class DecompilePage(QWidget):
         QTimer.singleShot(0, self._do_decompile_work)
 
     def _do_decompile_work(self):
-        """Actual decompilation work - called after UI has updated."""
-        # Setup log file
+        """Actual decompilation work - called after UI has updated.
+
+        Builds a queue of (path, channel) jobs (one per channel the user picked),
+        then kicks off the first. Subsequent jobs are launched by
+        _handle_finished as each one completes.
+        """
+        # Setup log file (single log for the whole run, even when 2 channels)
         toolkit_path = Path(self._toolkit_path)
         logs_dir = toolkit_path / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._log_file_path = logs_dir / f"decompile_{timestamp}.log"
 
+        # Build the job queue: primary path first, then secondary if any.
+        # Channels are derived from each path so the per-channel output dirs
+        # match the runtime layout the TS server expects.
+        queue: list[tuple[str, str]] = []
+        seen_channels: set[str] = set()
+        for hp in (self._hytale_path, self._secondary_hytale_path):
+            if not hp:
+                continue
+            ch = _dist.detect_channel_from_hytale_path(hp)
+            if ch in seen_channels:
+                continue
+            queue.append((hp, ch))
+            seen_channels.add(ch)
+        self._decompile_queue = queue
+
+        if not self._decompile_queue:
+            self._finish_with_error("No Hytale path provided")
+            return
+
         # Log header
         self.terminal.append_info("=" * 60)
         self.terminal.append_info("Hytale Toolkit - Decompilation Log")
         self.terminal.append_info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if len(self._decompile_queue) > 1:
+            ch_list = ", ".join(ch for _, ch in self._decompile_queue)
+            self.terminal.append_info(f"Channels queued: {ch_list}")
         self.terminal.append_info("=" * 60)
         self.terminal.append_line("")
-
-        # Log settings
-        ram_gb = self.ram_slider.value()
-        self.terminal.append_line(f"Hytale Path: {self._hytale_path}")
         self.terminal.append_line(f"Toolkit Path: {self._toolkit_path}")
-        self.terminal.append_line(f"RAM Allocation: {ram_gb} GB")
+        self.terminal.append_line(f"RAM Allocation: {self.ram_slider.value()} GB")
         self.terminal.append_line("")
 
-        # Verify paths. Decompile output is segregated per channel so both
-        # release and prerelease can coexist on disk.
-        server_jar = Path(self._hytale_path) / "Server" / "HytaleServer.jar"
+        self._start_next_decompile_job()
+
+    def _start_next_decompile_job(self):
+        """Pop and run the next job from the decompile queue."""
+        if not self._decompile_queue:
+            # Should not happen — _handle_finished only calls this when non-empty
+            return
+
+        hytale_path, channel = self._decompile_queue[0]
+        toolkit_path = Path(self._toolkit_path)
+        ram_gb = self.ram_slider.value()
+        # Reset class counter for accurate per-job progress
+        self._class_count = 0
+
+        server_jar = Path(hytale_path) / "Server" / "HytaleServer.jar"
         vineflower_jar = toolkit_path / "tools" / "vineflower.jar"
-        channel = _dist.detect_channel_from_hytale_path(self._hytale_path)
         decompiled_dir = toolkit_path / "decompiled" / channel
-        self.terminal.append_line(f"Detected channel: {channel}")
+
+        self.terminal.append_line("")
+        self.terminal.append_info(f"--- Channel: {channel} ---")
+        self.terminal.append_line(f"Source:  {server_jar}")
+        self.terminal.append_line(f"Output:  {decompiled_dir}")
 
         if not server_jar.exists():
             self.terminal.append_error(f"ERROR: HytaleServer.jar not found at {server_jar}")
@@ -2453,17 +2668,14 @@ class DecompilePage(QWidget):
             self._finish_with_error("Vineflower decompiler not found")
             return
 
-        # Clear existing decompiled directory if exists
+        # Clear any stale output for this channel
         if decompiled_dir.exists():
-            self.terminal.append_warning("Removing existing decompiled files...")
+            self.terminal.append_warning(f"Removing existing {channel} decompiled files...")
             shutil.rmtree(decompiled_dir)
-
         decompiled_dir.mkdir(parents=True, exist_ok=True)
 
-        self.terminal.append_line(f"Source:  {server_jar}")
-        self.terminal.append_line(f"Output:  {decompiled_dir}")
         self.terminal.append_line("")
-        self.terminal.append_info("Starting Vineflower decompiler...")
+        self.terminal.append_info(f"Starting Vineflower for channel '{channel}'...")
         self.terminal.append_line("")
 
         # Start the Java process
@@ -2473,24 +2685,20 @@ class DecompilePage(QWidget):
         self._process.finished.connect(self._handle_finished)
         self._process.errorOccurred.connect(self._handle_error)
 
-        # Strip PyInstaller's LD_LIBRARY_PATH so system tools use their own libs
         clean_env = _clean_pyinstaller_env()
         if clean_env:
             self._process.setProcessEnvironment(clean_env)
 
-        # Build command
         args = [
             "-Xms2G",
             f"-Xmx{ram_gb}G",
             "-jar", str(vineflower_jar),
-            "-dgs=1",  # Decompile generic signatures
-            "-asc=1",  # ASCII string characters
-            "-rsy=1",  # Remove synthetic class members
+            "-dgs=1",
+            "-asc=1",
+            "-rsy=1",
             str(server_jar),
             str(decompiled_dir)
         ]
-
-        # Use local JDK if available, otherwise system Java
         java_cmd = self._local_java_path if self._local_java_path else "java"
         self._process.start(java_cmd, args)
 
@@ -2552,26 +2760,51 @@ class DecompilePage(QWidget):
                 self.terminal.append_line(line)
 
     def _handle_finished(self, exit_code, exit_status):
-        """Handle process completion."""
+        """Handle one decompile job's completion.
+
+        Pops the current job; if more channels are queued, kicks off the next.
+        Otherwise marks the run as completed (or failed on non-zero exit).
+        """
         self.terminal.append_line("")
 
-        if exit_code == 0:
-            self._state = "completed"
-            self.terminal.append_success("=" * 60)
-            self.terminal.append_success(f"Decompilation completed successfully!")
-            self.terminal.append_success(f"Total classes processed: {self._class_count:,}")
-            self.terminal.append_success("=" * 60)
-
-            self.desc.setText("Decompilation completed successfully!")
-            self.progress_label.setText("Complete!")
-            self.progress_label.setStyleSheet("font-size: 12px; color: #22C55E; font-weight: bold;")
-        else:
+        if exit_code != 0:
+            # Abort the queue on first failure — partial decompile is worse
+            # than no decompile (would mislead the user about which channel
+            # is ready). _finish_with_error handles UI/log/callbacks.
+            self._decompile_queue = []
             self._finish_with_error(f"Process exited with code {exit_code}")
+            self._save_log()
+            return
 
-        # Save log file
+        # This job succeeded — drop it from the queue
+        if self._decompile_queue:
+            _, just_done = self._decompile_queue.pop(0)
+            self.terminal.append_success(
+                f"Channel '{just_done}' decompiled ({self._class_count:,} classes)"
+            )
+
+        if self._decompile_queue:
+            # More channels to do — chain the next without resetting state
+            self.terminal.append_line("")
+            self.progress_label.setText(
+                f"Continuing with channel '{self._decompile_queue[0][1]}'..."
+            )
+            QTimer.singleShot(0, self._start_next_decompile_job)
+            return
+
+        # All jobs done
+        self._state = "completed"
+        self.terminal.append_line("")
+        self.terminal.append_success("=" * 60)
+        self.terminal.append_success("All decompilation jobs completed successfully!")
+        self.terminal.append_success("=" * 60)
+
+        self.desc.setText("Decompilation completed successfully!")
+        self.progress_label.setText("Complete!")
+        self.progress_label.setStyleSheet("font-size: 12px; color: #22C55E; font-weight: bold;")
+
         self._save_log()
 
-        # Notify wizard
         if self._button_callback:
             self._button_callback()
         if self._back_button_callback:
@@ -3690,10 +3923,26 @@ class DatabasePage(QWidget):
 
         self.stack.addWidget(self.terminal_view)
 
-    def set_paths(self, toolkit_path: str, provider: str):
-        """Set the paths needed for database download."""
+    def set_paths(self, toolkit_path: str, provider: str,
+                  selected_channel: str | None = None):
+        """Set the paths needed for database download.
+
+        If `selected_channel` is provided (chosen earlier in HytalePathPage),
+        we persist it as the active channel so the toggle and the runtime MCP
+        agree on the user's intent. The user can still flip the toggle here.
+        """
         self._toolkit_path = toolkit_path
         self._provider = provider
+
+        # Align the active-channel sidecar with the user's HytalePathPage choice
+        # before we render the toggle, so the buttons reflect the right state.
+        if selected_channel in _dist.CHANNELS:
+            try:
+                _dist.set_active_channel(selected_channel)
+                self.channel_release_btn.setChecked(selected_channel == "release")
+                self.channel_prerelease_btn.setChecked(selected_channel == "prerelease")
+            except Exception:
+                pass
 
         # Update provider badge
         if provider:
@@ -6154,7 +6403,11 @@ class SetupWizard(QMainWindow):
         if isinstance(page, DecompilePage):
             if hasattr(paths_page, 'get_paths'):
                 paths = paths_page.get_paths()
-                page.set_paths(paths.get('hytale_path'), paths.get('toolkit_path'))
+                page.set_paths(
+                    paths.get('hytale_path'),
+                    paths.get('toolkit_path'),
+                    paths.get('secondary_hytale_path'),
+                )
         elif isinstance(page, JavadocsPage):
             if hasattr(paths_page, 'get_paths') and hasattr(decompile_page, 'get_settings'):
                 paths = paths_page.get_paths()
@@ -6172,7 +6425,11 @@ class SetupWizard(QMainWindow):
             if hasattr(paths_page, 'get_paths') and hasattr(provider_page, 'get_settings'):
                 paths = paths_page.get_paths()
                 provider_settings = provider_page.get_settings()
-                page.set_paths(paths.get('toolkit_path'), provider_settings.get('provider'))
+                page.set_paths(
+                    paths.get('toolkit_path'),
+                    provider_settings.get('provider'),
+                    selected_channel=paths.get('selected_channel'),
+                )
         elif isinstance(page, CLIToolsPage):
             if hasattr(paths_page, 'get_paths'):
                 paths = paths_page.get_paths()
@@ -6400,7 +6657,7 @@ class SetupWizard(QMainWindow):
         Saves only the essential variables that match setup.py:
         - HYTALE_INSTALL_PATH
         - HYTALE_CLIENT_DATA_DIR (only if exists)
-        - HYTALE_DECOMPILED_DIR
+        - HYTALE_DECOMPILED_BASE (channel folder appended at runtime)
         - EMBEDDING_PROVIDER
         - VOYAGE_API_KEY (only if using Voyage)
         - OLLAMA_MODEL (only if using Ollama)
@@ -6453,10 +6710,13 @@ class SetupWizard(QMainWindow):
             if client_data_dir.exists():
                 config["HYTALE_CLIENT_DATA_DIR"] = str(client_data_dir)
 
-        # Decompiled output is per-channel; point at the channel matching the
-        # selected Hytale install (release vs prerelease).
-        _channel = _dist.detect_channel_from_hytale_path(hytale_path or "")
-        config["HYTALE_DECOMPILED_DIR"] = str(toolkit_path / "decompiled" / _channel)
+        # Decompiled output is per-channel. We write the BASE dir (one level
+        # above the channel folder) so the TS server can swap channels at
+        # runtime via HYTALE_CHANNEL / active_channel sidecar without needing
+        # a re-run of the wizard. Drop the legacy single-channel key so it
+        # doesn't shadow the dynamic resolution.
+        config["HYTALE_DECOMPILED_BASE"] = str(toolkit_path / "decompiled")
+        config.pop("HYTALE_DECOMPILED_DIR", None)
 
         # Provider settings
         if hasattr(provider_page, 'get_settings'):
@@ -6486,7 +6746,7 @@ class SetupWizard(QMainWindow):
                 ordered_keys = [
                     "HYTALE_INSTALL_PATH",
                     "HYTALE_CLIENT_DATA_DIR",
-                    "HYTALE_DECOMPILED_DIR",
+                    "HYTALE_DECOMPILED_BASE",
                     "EMBEDDING_PROVIDER",
                     "VOYAGE_API_KEY",
                     "OLLAMA_MODEL",

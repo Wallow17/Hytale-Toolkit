@@ -117,6 +117,47 @@ def detect_channel_from_hytale_path(path: str | Path) -> str:
     return DEFAULT_CHANNEL
 
 
+# Folder names the Hytale Launcher uses under <install_root>/ for each channel.
+_CHANNEL_DIRS = {
+    "release": "release",
+    "prerelease": "pre-release",
+}
+
+
+def find_hytale_install_root(path: str | Path) -> Path | None:
+    """Walk upwards from `path` looking for the Hytale launcher install root.
+
+    The install root is the directory that contains either `release/` or
+    `pre-release/` (often both). Returns None if no such ancestor exists.
+    The input path itself is also considered (so passing the install root
+    directly works).
+    """
+    if not path:
+        return None
+    p = Path(path).expanduser().resolve()
+    # Walk up to filesystem root, including p itself.
+    for candidate in (p, *p.parents):
+        if any((candidate / d).is_dir() for d in _CHANNEL_DIRS.values()):
+            return candidate
+    return None
+
+
+def scan_hytale_channels(install_root: str | Path) -> dict[str, Path]:
+    """Return {channel: latest_game_path} for every channel installed under root.
+
+    Each value points at `<root>/<channel-dir>/package/game/latest`, which is
+    the path the rest of the wizard expects (with Client/, Server/, Assets.zip).
+    Channels missing this path are omitted, even if their top-level dir exists.
+    """
+    root = Path(install_root)
+    found: dict[str, Path] = {}
+    for channel, dirname in _CHANNEL_DIRS.items():
+        latest = root / dirname / "package" / "game" / "latest"
+        if (latest / "Server" / "HytaleServer.jar").is_file():
+            found[channel] = latest
+    return found
+
+
 # =============================================================================
 # CLI: `python -m distribution channel [release|prerelease]`
 #  - no arg  -> prints active channel

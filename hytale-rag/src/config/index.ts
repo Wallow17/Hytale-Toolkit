@@ -9,38 +9,13 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { configSchema, type AppConfig } from "./schema.js";
+import { getActiveChannel } from "../utils/channel.js";
 
 // Get the directory where this module is located (for resolving relative paths)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // Base data path is relative to the hytale-rag package root
 const DATA_BASE_PATH = path.resolve(__dirname, "..", "..", "data");
-
-/**
- * Resolve the active Hytale channel ("release" or "prerelease").
- *
- * Priority:
- *   1. HYTALE_CHANNEL env var
- *   2. ~/.hytale-toolkit/active_channel file (lets the user flip channels
- *      without editing MCP config — only requires a Claude Code restart)
- *   3. "release" default
- */
-function getActiveChannel(): string {
-  const envChannel = process.env.HYTALE_CHANNEL?.trim();
-  if (envChannel === "release" || envChannel === "prerelease") return envChannel;
-
-  const home = process.env.HOME || process.env.USERPROFILE;
-  if (home) {
-    try {
-      const sidecar = path.join(home, ".hytale-toolkit", "active_channel");
-      const value = fs.readFileSync(sidecar, "utf-8").trim();
-      if (value === "release" || value === "prerelease") return value;
-    } catch {
-      // fall through to default
-    }
-  }
-  return "release";
-}
 
 /**
  * Get the default data path for a given embedding provider
