@@ -4197,8 +4197,8 @@ class DatabasePage(QWidget):
         header.addWidget(self.provider_badge)
         card_layout.addLayout(header)
 
-        # Size subtitle
-        size_label = QLabel("~50-100 MB download")
+        # Size subtitle (both release + prerelease channels)
+        size_label = QLabel("~650 MB download (release + prerelease)")
         size_label.setStyleSheet("font-size: 11px; color: #22C55E; font-weight: bold; background: transparent;")
         card_layout.addWidget(size_label)
 
@@ -4303,6 +4303,72 @@ class DatabasePage(QWidget):
         options_btn_layout.addStretch()
         existing_layout.addWidget(options_container)
         settings_layout.addWidget(self.existing_options)
+
+        # ===== Active channel selector =====
+        # Lets the user pick which channel the MCP server consumes by default.
+        # Persists to ~/.hytale-toolkit/active_channel; takes effect on next
+        # Claude Code restart (the TS server reads it at startup).
+        self.channel_section = QWidget()
+        channel_layout = QVBoxLayout(self.channel_section)
+        channel_layout.setContentsMargins(0, 10, 0, 0)
+        channel_layout.setSpacing(6)
+
+        channel_title = QLabel("Default channel")
+        channel_title.setStyleSheet("font-size: 13px; font-weight: bold; color: white;")
+        channel_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        channel_layout.addWidget(channel_title)
+
+        channel_btn_row = QWidget()
+        channel_btn_layout = QHBoxLayout(channel_btn_row)
+        channel_btn_layout.setContentsMargins(0, 0, 0, 0)
+        channel_btn_layout.setSpacing(10)
+        channel_btn_layout.addStretch()
+
+        active_channel_initial = _dist.get_active_channel()
+
+        def _make_channel_btn(label: str, channel: str) -> QPushButton:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(channel == active_channel_initial)
+            btn.setFixedHeight(32)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #aaaaaa;
+                    border: 2px solid #555555;
+                    border-radius: 6px;
+                    padding: 0px 16px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #3a3a3a;
+                    color: white;
+                    border-color: #666666;
+                }
+                QPushButton:checked {
+                    background-color: #1f6aa5;
+                    color: white;
+                    border-color: #3498db;
+                }
+            """)
+            btn.clicked.connect(lambda: self._set_active_channel(channel))
+            return btn
+
+        self.channel_release_btn = _make_channel_btn("Release", "release")
+        self.channel_prerelease_btn = _make_channel_btn("Prerelease", "prerelease")
+        channel_btn_layout.addWidget(self.channel_release_btn)
+        channel_btn_layout.addWidget(self.channel_prerelease_btn)
+        channel_btn_layout.addStretch()
+
+        channel_layout.addWidget(channel_btn_row)
+
+        self.channel_hint = QLabel("Restart Claude Code (or your MCP host) after changing.")
+        self.channel_hint.setStyleSheet("font-size: 10px; color: #888888; background: transparent;")
+        self.channel_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        channel_layout.addWidget(self.channel_hint)
+
+        settings_layout.addWidget(self.channel_section)
 
         settings_layout.addStretch()
 
@@ -4488,6 +4554,34 @@ class DatabasePage(QWidget):
 
         if self._button_callback:
             self._button_callback()
+
+    def _set_active_channel(self, channel: str):
+        """Persist the user's active-channel choice and reflect it in the UI.
+
+        Persisted to ~/.hytale-toolkit/active_channel; the TS server reads this
+        at MCP startup, so the user must restart Claude Code for the new
+        channel to take effect.
+        """
+        try:
+            _dist.set_active_channel(channel)
+        except Exception as e:
+            self.channel_hint.setText(f"Failed to save channel: {e}")
+            self.channel_hint.setStyleSheet("font-size: 10px; color: #e74c3c; background: transparent;")
+            return
+
+        # Visual sync: only the picked button stays checked.
+        self.channel_release_btn.setChecked(channel == "release")
+        self.channel_prerelease_btn.setChecked(channel == "prerelease")
+        self.channel_hint.setText(
+            f"Default channel set to '{channel}'. Restart Claude Code to apply."
+        )
+        self.channel_hint.setStyleSheet("font-size: 10px; color: #22C55E; background: transparent;")
+
+        # Refresh version display so the card matches the new channel.
+        try:
+            self._update_version_display()
+        except Exception:
+            pass
 
     def set_button_callback(self, callback):
         self._button_callback = callback
