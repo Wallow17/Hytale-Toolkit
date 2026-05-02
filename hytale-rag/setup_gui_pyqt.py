@@ -1108,8 +1108,9 @@ class HytalePathPage(QWidget):
             ]
             common_paths.extend(steam_paths)
         elif sys.platform == "darwin":
-            # macOS common paths
+            # macOS common paths - Hytale Launcher paths first
             common_paths = [
+                Path.home() / "Library" / "Application Support" / "Hytale" / "install" / "release" / "package" / "game" / "latest",
                 Path("/Applications/Hytale/game/latest"),
                 Path.home() / "Library" / "Application Support" / "Hytale" / "game" / "latest",
                 Path.home() / "Applications" / "Hytale" / "game" / "latest",
@@ -4828,6 +4829,49 @@ sys.exit(0)
             self.update_warning_label.hide()
 
 
+def _get_enriched_path() -> str:
+    """Get PATH enriched with common tool locations (nvm, homebrew, etc.)."""
+    path = os.environ.get("PATH", "")
+    home = Path.home()
+    extra_dirs = []
+
+    if sys.platform != "win32":
+        # nvm: find the current default or any installed version
+        nvm_dir = Path(os.environ.get("NVM_DIR", home / ".nvm"))
+        nvm_versions = nvm_dir / "versions" / "node"
+        if nvm_versions.exists():
+            # Prefer 'default' alias, otherwise pick the latest version
+            default_alias = nvm_dir / "alias" / "default"
+            if default_alias.exists():
+                try:
+                    alias = default_alias.read_text().strip()
+                    # alias could be like "24" or "24.13.1" — glob match
+                    matches = sorted(nvm_versions.glob(f"v{alias}*"), reverse=True)
+                    if matches:
+                        extra_dirs.append(str(matches[0] / "bin"))
+                except Exception:
+                    pass
+            if not extra_dirs:
+                # Fallback: pick the latest installed version
+                versions = sorted(nvm_versions.iterdir(), reverse=True)
+                if versions:
+                    extra_dirs.append(str(versions[0] / "bin"))
+
+        # fnm
+        fnm_dir = home / ".fnm" / "current" / "bin"
+        if fnm_dir.exists():
+            extra_dirs.append(str(fnm_dir))
+
+        # Homebrew
+        for brew_prefix in ["/opt/homebrew/bin", "/usr/local/bin"]:
+            if Path(brew_prefix).exists():
+                extra_dirs.append(brew_prefix)
+
+    if extra_dirs:
+        path = os.pathsep.join(extra_dirs) + os.pathsep + path
+    return path
+
+
 def check_node_installed() -> tuple[bool, str]:
     """Check if Node.js is installed. Returns (is_installed, version_or_error)."""
     try:
@@ -4835,6 +4879,9 @@ def check_node_installed() -> tuple[bool, str]:
         kwargs = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        env = os.environ.copy()
+        env["PATH"] = _get_enriched_path()
 
         result = subprocess.run(
             ["node", "--version"],
@@ -5414,6 +5461,8 @@ class IntegrationPage(QWidget):
                 if sys.platform == "win32":
                     kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
+                env = os.environ.copy()
+                env["PATH"] = _get_enriched_path()
                 result = subprocess.run(
                     ["npm", "install"],
                     cwd=str(script_dir),
@@ -6274,6 +6323,31 @@ class CLIToolsPage(QWidget):
         except Exception as e:
             return False, f"Failed to update PATH: {e}"
 
+    def _find_compatible_python(self) -> str:
+        """Find a Python >= 3.10 interpreter on the system."""
+        import shutil
+        enriched_path = _get_enriched_path()
+        if sys.platform == "win32":
+            candidates = ["python"]
+        else:
+            candidates = ["python3.13", "python3.12", "python3.11", "python3.10", "python3"]
+        for name in candidates:
+            path = shutil.which(name, path=enriched_path)
+            if path:
+                try:
+                    result = subprocess.run(
+                        [path, "-c", "import sys; print(sys.version_info[:2])"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if result.returncode == 0:
+                        version = eval(result.stdout.strip())
+                        if version >= (3, 10):
+                            return path
+                except Exception:
+                    continue
+        # Fallback to generic python3
+        return "python" if sys.platform == "win32" else "python3"
+
     def _run_pip_install(self):
         """Run pip install for the CLI tool."""
         cli_path = "hytale-mod-cli"
@@ -6328,7 +6402,7 @@ class CLIToolsPage(QWidget):
 
         # Find Python interpreter (sys.executable is the .exe when frozen)
         if getattr(sys, '_MEIPASS', None):
-            python_exe = "python" if sys.platform == "win32" else "python3"
+            python_exe = self._find_compatible_python()
         else:
             python_exe = sys.executable
         self._process.start(python_exe, args)
