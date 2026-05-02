@@ -26,7 +26,7 @@ embedding:
     text: voyage-4-large     # For game data embeddings
 
   # Batch processing settings
-  batchSize: 128             # Max texts per API call
+  batchSize: 32              # Max texts per API call (Voyage cap is 120k tokens/batch — 32 stays safely below)
   rateLimitMs: 100           # Delay between batches
 
 vectorStore:

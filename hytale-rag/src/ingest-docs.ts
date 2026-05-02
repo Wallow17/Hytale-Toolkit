@@ -43,7 +43,8 @@ const DOCS_SUBPATH = "content/docs/en"; // Path within the repo to English docs
 const TABLE_NAME = "hytale_docs";
 
 function getDefaultDbPath(provider: string): string {
-  return path.resolve(__dirname, "..", "data", provider, "lancedb");
+  const channel = process.env.HYTALE_CHANNEL || "release";
+  return path.resolve(__dirname, "..", "data", provider, channel, "lancedb");
 }
 
 function getEmbeddingConfig(): IngestEmbeddingConfig {

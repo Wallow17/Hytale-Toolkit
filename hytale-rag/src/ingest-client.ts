@@ -36,7 +36,8 @@ const DEFAULT_CLIENT_DATA = "D:/Roaming/install/release/package/game/latest/Clie
 const TABLE_NAME = "hytale_client_ui";
 
 function getDefaultDbPath(provider: string): string {
-  return path.resolve(__dirname, "..", "data", provider, "lancedb");
+  const channel = process.env.HYTALE_CHANNEL || "release";
+  return path.resolve(__dirname, "..", "data", provider, channel, "lancedb");
 }
 
 function getEmbeddingConfig(): IngestEmbeddingConfig {

@@ -35,7 +35,8 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_ASSETS_ZIP = "D:/Roaming/install/release/package/game/latest/Assets.zip";
 
 function getDefaultDbPath(provider: string): string {
-  return path.resolve(__dirname, "..", "data", provider, "lancedb");
+  const channel = process.env.HYTALE_CHANNEL || "release";
+  return path.resolve(__dirname, "..", "data", provider, channel, "lancedb");
 }
 
 function getEmbeddingConfig(): IngestEmbeddingConfig {

@@ -57,6 +57,13 @@ const DEFAULT_RATE_LIMIT_MS = 100;
 const MAX_CHARS_CODE = 32000;
 const MAX_CHARS_TEXT = 16000;
 
+/** Voyage caps each batch at 120k tokens; we aim well below to absorb estimate error. */
+const BATCH_TOKEN_BUDGET = 80_000;
+/** Aggressive chars-per-token estimate. Voyage's tokenizer for UI/JSON content
+ *  routinely produces ~2 chars/token (vs ~4 for prose), so we under-estimate
+ *  on purpose to avoid under-counting and overshooting the 120k cap. */
+const CHARS_PER_TOKEN = 2;
+
 /**
  * Voyage AI response format
  */
@@ -71,6 +78,30 @@ interface VoyageResponse {
 function truncateToLimit(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars) + "\n// ... truncated";
+}
+
+/**
+ * Split a batch of texts into sub-batches whose estimated token count stays
+ * under BATCH_TOKEN_BUDGET. Voyage rejects requests over 120k tokens with HTTP
+ * 400, so we partition greedily by estimated token cost rather than by item
+ * count alone.
+ */
+function splitBatchByTokenBudget(texts: string[]): string[][] {
+  const result: string[][] = [];
+  let current: string[] = [];
+  let currentTokens = 0;
+  for (const text of texts) {
+    const est = Math.ceil(text.length / CHARS_PER_TOKEN);
+    if (current.length > 0 && currentTokens + est > BATCH_TOKEN_BUDGET) {
+      result.push(current);
+      current = [];
+      currentTokens = 0;
+    }
+    current.push(text);
+    currentTokens += est;
+  }
+  if (current.length > 0) result.push(current);
+  return result;
 }
 
 /**
@@ -118,10 +149,13 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
     // Truncate texts
     const truncatedTexts = texts.map((t) => truncateToLimit(t, maxChars));
 
-    // Process in batches
+    // Process in batches, sub-splitting any batch whose estimated token count
+    // exceeds Voyage's per-request limit.
     for (let i = 0; i < truncatedTexts.length; i += this.batchSize) {
-      const batch = truncatedTexts.slice(i, i + this.batchSize);
-
+      const sizedBatches = splitBatchByTokenBudget(
+        truncatedTexts.slice(i, i + this.batchSize)
+      );
+      for (const batch of sizedBatches) {
       const response = await fetch(VOYAGE_API_URL, {
         method: "POST",
         headers: {
@@ -154,9 +188,8 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
         onProgress(Math.min(i + this.batchSize, truncatedTexts.length), truncatedTexts.length);
       }
 
-      // Rate limiting between batches
-      if (i + this.batchSize < truncatedTexts.length) {
-        await new Promise((resolve) => setTimeout(resolve, this.rateLimitMs));
+      // Rate limiting between sub-batches
+      await new Promise((resolve) => setTimeout(resolve, this.rateLimitMs));
       }
     }
 

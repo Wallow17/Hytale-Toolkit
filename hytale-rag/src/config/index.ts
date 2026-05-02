@@ -17,11 +17,37 @@ const __dirname = path.dirname(__filename);
 const DATA_BASE_PATH = path.resolve(__dirname, "..", "..", "data");
 
 /**
+ * Resolve the active Hytale channel ("release" or "prerelease").
+ *
+ * Priority:
+ *   1. HYTALE_CHANNEL env var
+ *   2. ~/.hytale-toolkit/active_channel file (lets the user flip channels
+ *      without editing MCP config — only requires a Claude Code restart)
+ *   3. "release" default
+ */
+function getActiveChannel(): string {
+  const envChannel = process.env.HYTALE_CHANNEL?.trim();
+  if (envChannel === "release" || envChannel === "prerelease") return envChannel;
+
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (home) {
+    try {
+      const sidecar = path.join(home, ".hytale-toolkit", "active_channel");
+      const value = fs.readFileSync(sidecar, "utf-8").trim();
+      if (value === "release" || value === "prerelease") return value;
+    } catch {
+      // fall through to default
+    }
+  }
+  return "release";
+}
+
+/**
  * Get the default data path for a given embedding provider
- * Structure: data/{provider}/lancedb
+ * Structure: data/{provider}/{channel}/lancedb
  */
 function getDefaultDataPath(provider: string): string {
-  return path.resolve(DATA_BASE_PATH, provider, "lancedb");
+  return path.resolve(DATA_BASE_PATH, provider, getActiveChannel(), "lancedb");
 }
 
 /**

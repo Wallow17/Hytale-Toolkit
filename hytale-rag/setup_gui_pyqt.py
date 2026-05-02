@@ -4392,11 +4392,17 @@ class DatabasePage(QWidget):
                 f"padding: 3px 8px; border-radius: 4px; font-weight: bold;"
             )
 
-        # Check for existing database
+        # Check for existing database (per-channel layout). All configured
+        # channels must have the full table set to count as "existing".
         if toolkit_path and provider:
-            lancedb_dir = Path(toolkit_path) / "hytale-rag" / "data" / provider / "lancedb"
             tables = ["hytale_methods.lance", "hytale_client_ui.lance", "hytale_gamedata.lance"]
-            if lancedb_dir.exists() and all((lancedb_dir / t).exists() for t in tables):
+            provider_root = Path(toolkit_path) / "hytale-rag" / "data" / provider
+            all_present = all(
+                (provider_root / channel / "lancedb").exists()
+                and all((provider_root / channel / "lancedb" / t).exists() for t in tables)
+                for channel in _dist.CHANNELS
+            )
+            if all_present:
                 self._has_existing = True
                 self._use_existing = True
                 self.existing_options.show()
@@ -4550,14 +4556,21 @@ class DatabasePage(QWidget):
         self.terminal.append_line(f"Toolkit Path: {self._toolkit_path}")
         self.terminal.append_line("")
 
-        # Run the download script
-        provider_dir = toolkit_path / "hytale-rag" / "data" / self._provider
-        provider_dir.mkdir(parents=True, exist_ok=True)
+        # Per-channel layout: data/{provider}/{channel}/lancedb
+        provider_root = toolkit_path / "hytale-rag" / "data" / self._provider
+        provider_root.mkdir(parents=True, exist_ok=True)
 
-        lancedb_dir = provider_dir / "lancedb"
-        if lancedb_dir.exists():
-            self.terminal.append_warning("Removing existing database...")
-            shutil.rmtree(lancedb_dir)
+        # Wipe any pre-channel layout from older toolkit versions
+        legacy_lancedb = provider_root / "lancedb"
+        if legacy_lancedb.exists():
+            self.terminal.append_warning("Removing legacy database layout (pre-channel)...")
+            shutil.rmtree(legacy_lancedb)
+
+        for channel in _dist.CHANNELS:
+            channel_dir = provider_root / channel / "lancedb"
+            if channel_dir.exists():
+                self.terminal.append_warning(f"Removing existing {channel} database...")
+                shutil.rmtree(channel_dir)
 
         self.terminal.append_info("Starting download...")
         self.terminal.append_line("")
@@ -4584,8 +4597,10 @@ class DatabasePage(QWidget):
         else:
             python_cmd = sys.executable
 
-        # Inline download script - doesn't depend on external setup.py
-        # This ensures we always use CDN, even if toolkit has old code
+        # Inline download script - downloads BOTH channels (release + prerelease).
+        # Manifest schema (v2):
+        #   {"schema_version": 2, "channels": {"release": {"latest": "..."}, "prerelease": {...}}}
+        # Falls back to legacy schema {"latest": "..."} for backward compat.
         script = f'''
 import json
 import ssl
@@ -4596,78 +4611,80 @@ from pathlib import Path
 
 CDN_BASE_URL = "{CDN_BASE_URL}"
 provider = "{self._provider}"
-dest_dir = Path(r"{provider_dir}")
+provider_root = Path(r"{provider_root}")
+channels = {list(_dist.CHANNELS)!r}
 
-dest_dir.mkdir(parents=True, exist_ok=True)
-asset_name = f"lancedb-{{provider}}-all.tar.gz"
-tarball_path = dest_dir / asset_name
-manifest_url = f"{{CDN_BASE_URL}}/db/manifest.json"
+provider_root.mkdir(parents=True, exist_ok=True)
+manifest_url = f"{{CDN_BASE_URL}}/manifest.json"
 
-print("Fetching latest release info...")
+print("Fetching manifest...")
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
 try:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
     req = urllib.request.Request(manifest_url, headers={{"User-Agent": "Hytale-Toolkit"}})
     with urllib.request.urlopen(req, context=ctx, timeout=30) as response:
         manifest = json.loads(response.read().decode())
+except Exception as e:
+    print(f"ERROR: Failed to fetch manifest: {{e}}")
+    sys.exit(1)
 
-    latest_version = manifest.get("latest")
-    if not latest_version:
-        print("ERROR: No latest version found in manifest.")
+# Normalize schema: legacy {"latest": "..."} -> channels.release
+if "channels" not in manifest and "latest" in manifest:
+    manifest = {{"channels": {{"release": {{"latest": manifest["latest"]}}}}}}
+
+channels_meta = manifest.get("channels", {{}})
+
+for channel in channels:
+    meta = channels_meta.get(channel)
+    if not meta or not meta.get("latest"):
+        print(f"WARNING: Channel '{{channel}}' not in manifest, skipping.")
+        continue
+
+    version = meta["latest"]
+    asset_name = f"lancedb-{{provider}}-{{channel}}.tar.gz"
+    download_url = f"{{CDN_BASE_URL}}/{{asset_name}}"
+    channel_dir = provider_root / channel
+    channel_dir.mkdir(parents=True, exist_ok=True)
+    tarball_path = channel_dir / asset_name
+
+    print(f"[{{channel}}] Downloading {{asset_name}} (version {{version}})...")
+    try:
+        req = urllib.request.Request(download_url, headers={{"User-Agent": "Hytale-Toolkit"}})
+        with urllib.request.urlopen(req, context=ctx, timeout=600) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            block_size = 8192
+            with open(tarball_path, "wb") as f:
+                while True:
+                    chunk = response.read(block_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = min(100, downloaded * 100 / total_size)
+                        mb_down = downloaded / (1024 * 1024)
+                        mb_total = total_size / (1024 * 1024)
+                        print(f"\\r[{{channel}}] Download: {{percent:.1f}}% ({{mb_down:.1f}}/{{mb_total:.1f}} MB)", end="", flush=True)
+        print()
+    except Exception as e:
+        print(f"\\nERROR: Download failed for channel '{{channel}}': {{e}}")
         sys.exit(1)
 
-    download_url = f"{{CDN_BASE_URL}}/db/{{latest_version}}/{{asset_name}}"
-    print(f"Latest version: {{latest_version}}")
-except Exception as e:
-    print(f"ERROR: Failed to fetch version info: {{e}}")
-    sys.exit(1)
+    print(f"[{{channel}}] Extracting...")
+    try:
+        with tarfile.open(tarball_path, "r:gz") as tar:
+            tar.extractall(path=channel_dir)
+        tarball_path.unlink()
+    except Exception as e:
+        print(f"ERROR: Extraction failed for channel '{{channel}}': {{e}}")
+        sys.exit(1)
 
-print(f"Downloading {{asset_name}}...")
-try:
-    req = urllib.request.Request(download_url, headers={{"User-Agent": "Hytale-Toolkit"}})
-    with urllib.request.urlopen(req, context=ctx, timeout=300) as response:
-        total_size = int(response.headers.get("Content-Length", 0))
-        downloaded = 0
-        block_size = 8192
+    (channel_dir / ".version").write_text(version, encoding="utf-8")
+    print(f"[{{channel}}] OK ({{version}})")
 
-        with open(tarball_path, "wb") as f:
-            while True:
-                chunk = response.read(block_size)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-
-                if total_size > 0:
-                    percent = min(100, downloaded * 100 / total_size)
-                    mb_down = downloaded / (1024 * 1024)
-                    mb_total = total_size / (1024 * 1024)
-                    print(f"\\rDownload: {{percent:.1f}}% ({{mb_down:.1f}}/{{mb_total:.1f}} MB)", end="", flush=True)
-    print()
-except Exception as e:
-    print(f"\\nERROR: Download failed: {{e}}")
-    sys.exit(1)
-
-print("Extracting database...")
-try:
-    with tarfile.open(tarball_path, "r:gz") as tar:
-        tar.extractall(path=dest_dir)
-    tarball_path.unlink()
-    print("Extraction complete!")
-except Exception as e:
-    print(f"ERROR: Extraction failed: {{e}}")
-    sys.exit(1)
-
-# Save version file
-version_file = dest_dir / ".version"
-try:
-    version_file.write_text(latest_version)
-except Exception:
-    pass
-
-print("Database download successful!")
+print("All channels downloaded successfully!")
 sys.exit(0)
 '''
         self._process.start(python_cmd, ["-c", script])
@@ -4773,9 +4790,16 @@ sys.exit(0)
         self.progress_label.setStyleSheet("font-size: 12px; color: #888888;")
         self.start_download()
 
-    def _fetch_latest_version(self) -> str | None:
-        """Fetch the latest available database version from CDN manifest."""
-        manifest_url = f"{CDN_BASE_URL}/db/manifest.json"
+    def _fetch_latest_version(self, channel: str | None = None) -> str | None:
+        """Fetch the latest available DB version from manifest for a given channel.
+
+        Defaults to the active channel. Manifest schema (v2) is:
+          {"channels": {"release": {"latest": "..."}, "prerelease": {...}}}
+        Falls back to legacy {"latest": "..."} when only one channel exists.
+        """
+        if channel is None:
+            channel = _dist.get_active_channel()
+        manifest_url = f"{CDN_BASE_URL}/manifest.json"
         try:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -4784,15 +4808,28 @@ sys.exit(0)
             req = urllib.request.Request(manifest_url, headers={"User-Agent": "Hytale-Toolkit"})
             with urllib.request.urlopen(req, context=ctx, timeout=5) as response:
                 manifest = json.loads(response.read().decode())
+
+            channels = manifest.get("channels")
+            if isinstance(channels, dict):
+                meta = channels.get(channel)
+                if isinstance(meta, dict):
+                    return meta.get("latest")
+                return None
+            # Legacy schema fallback (single-channel manifest)
             return manifest.get("latest")
         except Exception:
             return None
 
-    def _get_installed_version(self) -> str | None:
-        """Get the installed database version from .version file."""
+    def _get_installed_version(self, channel: str | None = None) -> str | None:
+        """Get installed DB version from data/{provider}/{channel}/.version."""
         if not self._toolkit_path or not self._provider:
             return None
-        version_file = Path(self._toolkit_path) / "hytale-rag" / "data" / self._provider / ".version"
+        if channel is None:
+            channel = _dist.get_active_channel()
+        version_file = (
+            Path(self._toolkit_path) / "hytale-rag" / "data"
+            / self._provider / channel / ".version"
+        )
         if version_file.exists():
             try:
                 return version_file.read_text().strip()

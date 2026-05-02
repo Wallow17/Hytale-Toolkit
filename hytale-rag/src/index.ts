@@ -148,10 +148,11 @@ function getDirectorySize(dirPath: string): number {
  */
 function validateDatabase(dbPath: string): string | undefined {
   const releaseUrl = releasesPageUrl();
+  const channel = process.env.HYTALE_CHANNEL || "release";
 
   // Check if database directory exists
   if (!fs.existsSync(dbPath)) {
-    return `Database not found at: ${dbPath}\n\nThe LanceDB database is required for semantic search.\n\nTo fix this:\n1. Download lancedb-{provider}-all.tar.gz from ${releaseUrl}\n2. Extract it to the data/ folder\n\nExpected structure: data/{provider}/lancedb/hytale_methods.lance/`;
+    return `Database not found at: ${dbPath}\n\nThe LanceDB database is required for semantic search.\nActive channel: ${channel} (override with HYTALE_CHANNEL=release|prerelease).\n\nTo fix this:\n1. Download lancedb-{provider}-${channel}.tar.gz from ${releaseUrl}\n2. Extract it to data/{provider}/${channel}/\n\nExpected structure: data/{provider}/${channel}/lancedb/hytale_methods.lance/`;
   }
 
   // Check each expected table

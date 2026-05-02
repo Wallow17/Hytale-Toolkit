@@ -57,3 +57,72 @@ def javadocs_release_url() -> str:
 
 def javadocs_prerelease_url() -> str:
     return load()["javadocs"]["prerelease_url"]
+
+
+# =============================================================================
+# Channel handling (release vs prerelease)
+# =============================================================================
+
+CHANNELS = ("release", "prerelease")
+DEFAULT_CHANNEL = "release"
+
+
+def _active_channel_file() -> Path:
+    return Path.home() / ".hytale-toolkit" / "active_channel"
+
+
+def get_active_channel() -> str:
+    """Return the currently active Hytale channel.
+
+    Reads ~/.hytale-toolkit/active_channel; falls back to DEFAULT_CHANNEL.
+    """
+    try:
+        value = _active_channel_file().read_text(encoding="utf-8").strip()
+        if value in CHANNELS:
+            return value
+    except OSError:
+        pass
+    return DEFAULT_CHANNEL
+
+
+def set_active_channel(channel: str) -> None:
+    """Persist the active channel choice. Safe to call repeatedly."""
+    if channel not in CHANNELS:
+        raise ValueError(f"channel must be one of {CHANNELS}, got {channel!r}")
+    path = _active_channel_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(channel, encoding="utf-8")
+
+
+def db_tarball_name(provider: str, channel: str) -> str:
+    """Asset name for a per-channel database tarball."""
+    return f"lancedb-{provider}-{channel}.tar.gz"
+
+
+# =============================================================================
+# CLI: `python -m distribution channel [release|prerelease]`
+#  - no arg  -> prints active channel
+#  - with arg -> sets active channel and prints confirmation
+# Restart Claude Code (or any running MCP server) afterwards to pick up.
+# =============================================================================
+
+def _main_cli(argv: list[str]) -> int:
+    if len(argv) < 2 or argv[1] != "channel":
+        print("Usage: python -m distribution channel [release|prerelease]")
+        return 2
+    if len(argv) == 2:
+        print(get_active_channel())
+        return 0
+    target = argv[2]
+    try:
+        set_active_channel(target)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    print(f"active channel set to: {target}")
+    print("note: restart Claude Code (or your MCP host) to apply.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main_cli(sys.argv))

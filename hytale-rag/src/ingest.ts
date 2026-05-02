@@ -43,7 +43,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function getDefaultDbPath(provider: string): string {
-  return path.join(__dirname, "..", "data", provider, "lancedb");
+  const channel = process.env.HYTALE_CHANNEL || "release";
+  return path.join(__dirname, "..", "data", provider, channel, "lancedb");
 }
 
 function getEmbeddingConfig(): IngestEmbeddingConfig {
