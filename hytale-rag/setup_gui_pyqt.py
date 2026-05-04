@@ -4239,7 +4239,7 @@ except Exception as e:
     print(f"ERROR: Failed to fetch manifest: {{e}}")
     sys.exit(1)
 
-# Normalize schema: legacy {"latest": "..."} -> channels.release
+# Normalize legacy single-channel manifest shape into channels.release.
 if "channels" not in manifest and "latest" in manifest:
     manifest = {{"channels": {{"release": {{"latest": manifest["latest"]}}}}}}
 

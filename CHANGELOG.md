@@ -5,6 +5,20 @@ All notable changes to Hytale Toolkit will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-02 (Wallow17 fork)
+
+### Added
+- Release/prerelease channel switching: both DBs and decompiled outputs can coexist; the active one is picked at runtime
+- HytalePathPage auto-detects both Hytale channels under the launcher install root and shows a picker
+- Optional "Setup both channels" checkbox decompiles release + prerelease sequentially
+- Active-channel toggle in DatabasePage + bundled `hytale-channel` CLI for fast post-install switches
+- Token-aware batch splitting in the Voyage embedding provider so large UI files no longer overshoot the 120k cap
+
+### Changed
+- Javadocs page no longer generates locally; opens Hypixel's official `release.server.docs.hytale.com` / `prerelease.server.docs.hytale.com`
+- `.env` writes `HYTALE_DECOMPILED_BASE` (channel appended at runtime) instead of the static `HYTALE_DECOMPILED_DIR`
+- Fork-specific URLs (CDN, GitHub repo, javadocs sites) externalized to `hytale-rag/config/distribution.json`
+
 ## [1.0.20] - 2026-02-14
 
 ### Fixed
